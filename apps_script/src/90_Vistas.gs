@@ -42,25 +42,23 @@ function actualizarVistaConsumoDiario_() {
 }
 
 function actualizarVistaEjecucionContractual_() {
-  const cupos = leerFilas_('cupo_contractual_sede');
-  const contratos = leerFilas_('contrato_articulo');
+  const contratos = leerFilas_('contrato_articulo').filter((c) => c.activo === true);
   const articulos = leerFilas_('articulo');
   const proveedores = leerFilas_('proveedor');
 
-  const filas = cupos.map((c) => {
-    const contrato = contratos.find((ct) => String(ct.contrato_articulo_id) === String(c.contrato_articulo_id));
-    const art = contrato ? articulos.find((a) => a.codigo_articulo === contrato.codigo_articulo) : null;
-    const prov = contrato ? proveedores.find((p) => p.proveedor_id === contrato.proveedor_id) : null;
+  const filas = contratos.map((c) => {
+    const art = articulos.find((a) => a.codigo_articulo === c.codigo_articulo);
+    const prov = proveedores.find((p) => p.proveedor_id === c.proveedor_id);
     const maximo = Number(c.cantidad_maxima_anual);
     const pct = maximo > 0 ? Number(c.cantidad_acumulada_ejercicio) / maximo : 0;
     return [
-      c.sede_id, contrato ? contrato.codigo_articulo : '', art ? art.descripcion : '',
+      c.codigo_articulo, art ? art.descripcion : '',
       prov ? prov.razon_social : '', Number(c.cantidad_acumulada_ejercicio), maximo, pct,
     ];
   });
 
   reescribirVista_('vista_ejecucion_contractual',
-    ['sede_id', 'codigo_articulo', 'descripcion', 'proveedor', 'cantidad_acumulada_ejercicio', 'cantidad_maxima_anual', 'pct_ejercido'],
+    ['codigo_articulo', 'descripcion', 'proveedor', 'cantidad_acumulada_ejercicio', 'cantidad_maxima_anual', 'pct_ejercido'],
     filas);
 }
 
@@ -70,8 +68,8 @@ function actualizarVistaTrazabilidadOC_() {
   const detalleProg = leerFilas_('programacion_detalle');
   const cabProg = leerFilas_('programacion_mensual');
   const areas = leerFilas_('area_servicio');
-  const detalleOC = leerFilas_('orden_suministro_detalle');
-  const ordenes = leerFilas_('orden_suministro');
+  const detalleOC = leerFilas_('orden_compra_detalle');
+  const ordenes = leerFilas_('orden_compra');
   const proveedores = leerFilas_('proveedor');
 
   const filas = asignaciones.map((asig) => {

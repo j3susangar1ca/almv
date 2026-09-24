@@ -52,20 +52,14 @@ function apiListarAreasServicio() {
 }
 
 function apiListarArticulos() {
-  const unidades = leerFilas_('unidad_medida');
   const contratos = leerFilas_('contrato_articulo');
   return leerFilas_('articulo').filter((f) => f.activo).map((a) => {
-    const u = unidades.find((x) => Number(x.unidad_id) === Number(a.unidad_id));
     const contrato = contratos.find((c) => c.codigo_articulo === a.codigo_articulo && c.activo === true);
     return Object.assign(limpiarFila_(a), {
-      unidad_clave: u ? u.clave : '',
+      unidad_clave: a.unidad_medida, // alias por compatibilidad con el frontend existente
       precio_unitario: contrato ? Number(contrato.precio_unitario) : null, // para el resumen $ de la barra sticky
     });
   });
-}
-
-function apiListarSedes() {
-  return leerFilas_('sede').map(limpiarFila_);
 }
 
 // ---- Endpoints de programación mensual (el "menú y calendario") ----
@@ -96,11 +90,10 @@ function apiGuardarLoteCantidades(programacionId, cambios) {
   return guardarLoteProgramacionDetalle(programacionId, cambios);
 }
 
-/** Techo contractual por artículo para el servicio dado (semáforo de techo presupuestal). */
-function apiObtenerCuposServicio(areaId) {
-  requiereAcceso_(areaId, 'LECTURA');
-  const sedeId = sedeDeArea_(areaId);
-  return sedeId ? obtenerCuposPorSede_(sedeId) : {};
+/** Techo contractual por artículo (semáforo de techo presupuestal) — una sola sede, ya no hay que resolverla por servicio. */
+function apiObtenerCuposArticulos() {
+  obtenerSesionActual(); // cualquier usuario autenticado puede consultarlo, es información de referencia
+  return obtenerCuposArticulos_();
 }
 
 function apiCrearProgramacionMensual(areaId, anio, mes) {
@@ -117,8 +110,8 @@ function apiReabrirCarga(programacionId) {
 
 // ---- Endpoints de consolidación / OC / documentos ----
 
-function apiConsolidarDemanda(codigoArticulo, sedeId, fechaInicio, fechaFin) {
-  return consolidarDemandaEnOC(codigoArticulo, sedeId, fechaInicio, fechaFin);
+function apiConsolidarDemanda(codigoArticulo, fechaInicio, fechaFin) {
+  return consolidarDemandaEnOC(codigoArticulo, fechaInicio, fechaFin);
 }
 
 function apiGenerarValePedido(areaId, fecha) {

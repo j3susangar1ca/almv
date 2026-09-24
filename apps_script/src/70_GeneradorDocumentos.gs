@@ -13,8 +13,6 @@
 function generarValePedido(areaId, fechaIso) {
   const area = buscarPorClave_('area_servicio', 'area_id', areaId);
   if (!area) throw new Error('area_servicio ' + areaId + ' no existe.');
-  const almacen = area.almacen_id ? buscarPorClave_('almacen', 'almacen_id', area.almacen_id) : null;
-  const sede = almacen ? buscarPorClave_('sede', 'sede_id', almacen.sede_id) : null;
 
   const renglones = renglonesValePedido_(areaId, fechaIso);
   if (renglones.length === 0) throw new Error('No hay programación registrada para ' + area.nombre + ' el ' + fechaIso + '.');
@@ -27,7 +25,7 @@ function generarValePedido(areaId, fechaIso) {
   body.appendParagraph('PEDIDO AL ALMACÉN DE VÍVERES').setHeading(DocumentApp.ParagraphHeading.HEADING2).setAlignment(DocumentApp.HorizontalAlignment.CENTER);
 
   const encabezado = body.appendTable([
-    ['Partida Presupuestal:', '2212', 'Unidad Hospitalaria:', sede ? sede.nombre_sede : ''],
+    ['Partida Presupuestal:', '2212', 'Unidad Hospitalaria:', SEDE_NOMBRE],
     ['Fecha:', fechaIso, 'Servicio:', area.nombre],
   ]);
   estiloTablaSinBorde_(encabezado);
@@ -59,17 +57,15 @@ function renglonesValePedido_(areaId, fechaIso) {
     (f) => idsProgramacion.indexOf(String(f.programacion_id)) !== -1 && f.fecha === fechaIso && Number(f.cantidad_programada) > 0
   );
   const articulos = leerFilas_('articulo');
-  const unidades = leerFilas_('unidad_medida');
   const movimientos = leerFilas_('movimiento_inventario');
 
   return detalle.map((d) => {
     const art = articulos.find((a) => a.codigo_articulo === d.codigo_articulo);
-    const unidad = art ? unidades.find((u) => Number(u.unidad_id) === Number(art.unidad_id)) : null;
     const surtido = movimientos.find((m) => String(m.programacion_detalle_id) === String(d.programacion_detalle_id) && m.tipo_movimiento === 'SALIDA_CONSUMO');
     return {
       codigo: d.codigo_articulo,
       descripcion: art ? art.descripcion : '',
-      unidad: unidad ? unidad.clave : '',
+      unidad: art ? art.unidad_medida : '',
       cantidadPedida: d.cantidad_programada,
       cantidadSurtida: surtido ? surtido.cantidad : '',
     };
@@ -77,12 +73,11 @@ function renglonesValePedido_(areaId, fechaIso) {
 }
 
 function generarPDFOrdenCompra(ordenId) {
-  const orden = buscarPorClave_('orden_suministro', 'orden_id', ordenId);
-  if (!orden) throw new Error('orden_suministro ' + ordenId + ' no existe.');
+  const orden = buscarPorClave_('orden_compra', 'orden_id', ordenId);
+  if (!orden) throw new Error('orden_compra ' + ordenId + ' no existe.');
   const proveedor = buscarPorClave_('proveedor', 'proveedor_id', orden.proveedor_id);
-  const sede = buscarPorClave_('sede', 'sede_id', orden.sede_id);
 
-  const detalles = leerFilas_('orden_suministro_detalle').filter((f) => String(f.orden_id) === String(ordenId));
+  const detalles = leerFilas_('orden_compra_detalle').filter((f) => String(f.orden_id) === String(ordenId));
   const contratos = leerFilas_('contrato_articulo');
   const articulos = leerFilas_('articulo');
 
@@ -93,7 +88,7 @@ function generarPDFOrdenCompra(ordenId) {
 
   estiloTablaSinBorde_(body.appendTable([
     ['Proveedor:', proveedor ? proveedor.razon_social : orden.proveedor_id],
-    ['Sede solicitante:', sede ? sede.nombre_sede : orden.sede_id],
+    ['Sede solicitante:', SEDE_NOMBRE],
     ['Fecha de emisión:', orden.fecha_emision],
     ['Fecha de entrega programada:', orden.fecha_entrega_programada || 'Por confirmar'],
   ]));

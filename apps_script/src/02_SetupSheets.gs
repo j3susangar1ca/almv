@@ -1,7 +1,9 @@
 /**
- * Crea (o repara) las 21 pestañas de datos con sus encabezados, formato
- * de fecha y listas desplegables — el equivalente a correr
- * schema_dietologia.sql una sola vez sobre una base nueva.
+ * Crea (o repara) las pestañas de datos con sus encabezados, formato
+ * de fecha y listas desplegables — el equivalente a correr un DDL una
+ * sola vez sobre una base nueva. El número exacto de pestañas es
+ * Object.keys(ESQUEMA_HOJAS).length (ver 00_Config.gs); crece o se
+ * reduce según ese esquema, no está fijo aquí.
  *
  * Ejecutar UNA VEZ desde el editor de Apps Script, después de
  * configurarProyectoInicial().
