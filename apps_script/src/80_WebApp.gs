@@ -36,7 +36,7 @@ function include(nombreArchivo) {
 
 /** El frontend llama esto al montar la app para saber quién es el usuario, su rol y sus servicios (sección 4 del SRS). */
 function apiObtenerSesion() {
-  return obtenerSesionActual();
+  return _paraCliente_(obtenerSesionActual());
 }
 
 // ---- Endpoints de catálogo (listas para selects del frontend) ----
@@ -45,21 +45,22 @@ function apiObtenerSesion() {
 function apiListarAreasServicio() {
   const sesion = obtenerSesionActual();
   const todas = leerFilas_('area_servicio').filter((f) => f.activo).map(limpiarFila_);
-  if (sesion.rol === 'ADMINISTRADOR') return todas;
+  if (sesion.rol === 'ADMINISTRADOR') return _paraCliente_(todas);
   const permitidas = {};
   sesion.servicios_asignados.forEach((s) => { permitidas[String(s.servicio_id)] = true; });
-  return todas.filter((a) => permitidas[String(a.area_id)]);
+  return _paraCliente_(todas.filter((a) => permitidas[String(a.area_id)]));
 }
 
 function apiListarArticulos() {
   const contratos = leerFilas_('contrato_articulo');
-  return leerFilas_('articulo').filter((f) => f.activo).map((a) => {
+  const articulos = leerFilas_('articulo').filter((f) => f.activo).map((a) => {
     const contrato = contratos.find((c) => c.codigo_articulo === a.codigo_articulo && c.activo === true);
     return Object.assign(limpiarFila_(a), {
       unidad_clave: a.unidad_medida, // alias por compatibilidad con el frontend existente
       precio_unitario: contrato ? Number(contrato.precio_unitario) : null, // para el resumen $ de la barra sticky
     });
   });
+  return _paraCliente_(articulos);
 }
 
 // ---- Endpoints de programación mensual (el "menú y calendario") ----
@@ -73,7 +74,7 @@ function apiObtenerProgramacionMes(areaId, anio, mes) {
   const detalle = leerFilas_('programacion_detalle')
     .filter((f) => String(f.programacion_id) === String(cabecera.programacion_id))
     .map(limpiarFila_);
-  return { cabecera: limpiarFila_(cabecera), detalle: detalle };
+  return _paraCliente_({ cabecera: limpiarFila_(cabecera), detalle: detalle });
 }
 
 // El RBAC y el bloqueo por estatus ENVIADO se validan DENTRO de
@@ -93,7 +94,7 @@ function apiGuardarLoteCantidades(programacionId, cambios) {
 /** Techo contractual por artículo (semáforo de techo presupuestal) — una sola sede, ya no hay que resolverla por servicio. */
 function apiObtenerCuposArticulos() {
   obtenerSesionActual(); // cualquier usuario autenticado puede consultarlo, es información de referencia
-  return obtenerCuposArticulos_();
+  return _paraCliente_(obtenerCuposArticulos_());
 }
 
 function apiCrearProgramacionMensual(areaId, anio, mes) {
@@ -130,7 +131,7 @@ function apiListarUsuarios() {
   requiereRol_(['ADMINISTRADOR']);
   const servicios = leerFilas_('usuario_servicios');
   const areas = leerFilas_('area_servicio');
-  return leerFilas_('usuarios').map((u) => {
+  const usuarios = leerFilas_('usuarios').map((u) => {
     const asignaciones = servicios
       .filter((s) => String(s.usuario_id) === String(u.usuario_id))
       .map((s) => {
@@ -139,6 +140,7 @@ function apiListarUsuarios() {
       });
     return Object.assign(limpiarFila_(u), { servicios_asignados: asignaciones });
   });
+  return _paraCliente_(usuarios);
 }
 
 function apiGuardarUsuario(datos) {
@@ -167,7 +169,7 @@ function apiListarConsolidadoGeneral() {
   const articulos = leerFilas_('articulo');
   const areas = leerFilas_('area_servicio');
   const usuarios = leerFilas_('usuarios');
-  return leerFilas_('consolidado_general').map((f) => {
+  const filas = leerFilas_('consolidado_general').map((f) => {
     const art = articulos.find((a) => a.codigo_articulo === f.codigo_articulo);
     const area = areas.find((a) => String(a.area_id) === String(f.area_id));
     const usuario = usuarios.find((u) => String(u.usuario_id) === String(f.usuario_envio_id));
@@ -177,6 +179,7 @@ function apiListarConsolidadoGeneral() {
       correo_envio: usuario ? usuario.correo : '',
     });
   });
+  return _paraCliente_(filas);
 }
 
 /** Quita la propiedad interna _row antes de mandar un objeto al frontend. */
@@ -184,4 +187,21 @@ function limpiarFila_(fila) {
   const copia = Object.assign({}, fila);
   delete copia._row;
   return copia;
+}
+
+/**
+ * Red de seguridad final antes de devolver algo al frontend por
+ * google.script.run: lo redondea por JSON para garantizar que sólo viajen
+ * tipos que sabe serializar (string/number/boolean/null/array/object).
+ * google.script.run no serializa de vuelta al navegador un objeto Date (ni
+ * cualquier otro tipo no-JSON que se haya colado) y, en vez de lanzar un
+ * error, entrega `null` al successHandler en silencio — el frontend recibía
+ * null y tronaba con "Cannot read properties of null" al leer cualquier
+ * propiedad de la respuesta. leerFilas_ (01_Utilidades.gs) ya normaliza los
+ * Date reales de las hojas a texto "yyyy-mm-dd" al leerlas, así que esto es
+ * el respaldo — por si algún valor no-JSON se cuela desde cualquier otro
+ * lado — no el mecanismo principal.
+ */
+function _paraCliente_(valor) {
+  return JSON.parse(JSON.stringify(valor));
 }
