@@ -523,11 +523,11 @@ createApp({
           </div>
 
           <div class="flex gap-2 mt-4">
-            <button v-if="puedeEnviar && cabecera.estatus==='BORRADOR'" @click="abrirModalEnviar" class="boton boton-exito">
+            <button v-if="cabecera && puedeEnviar && cabecera.estatus==='BORRADOR'" @click="abrirModalEnviar" class="boton boton-exito">
               <svg class="icono" viewBox="0 0 24 24"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
               Revisar y enviar
             </button>
-            <button v-if="esAdmin && cabecera.estatus==='ENVIADO'" @click="reabrirCargaActual" class="boton boton-advertencia">
+            <button v-if="cabecera && esAdmin && cabecera.estatus==='ENVIADO'" @click="reabrirCargaActual" class="boton boton-advertencia">
               <svg class="icono" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
               Reabrir carga
             </button>
