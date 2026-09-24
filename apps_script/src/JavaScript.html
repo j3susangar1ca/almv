@@ -1,5 +1,5 @@
 <script>
-const { createApp, ref, reactive, computed, onMounted } = Vue;
+const { createApp, ref, reactive, computed, onMounted, nextTick } = Vue;
 
 /** Envuelve google.script.run en una Promesa para poder usar async/await. */
 function gsRun(nombreFuncion, ...args) {
@@ -12,6 +12,7 @@ function gsRun(nombreFuncion, ...args) {
 }
 
 const MESES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+const DIAS_SEMANA_CORTO = ['D', 'L', 'M', 'M', 'J', 'V', 'S']; // Date.getDay(): 0=domingo
 
 createApp({
   setup() {
@@ -20,12 +21,13 @@ createApp({
     const aviso = ref('');
     const pestana = ref('programacion');
 
-    const sesion = ref(null); // { usuario_id, correo, nombre, rol, servicios_asignados: [{servicio_id, nombre, permiso}] }
+    const sesion = ref(null);
     const esAdmin = computed(() => sesion.value && sesion.value.rol === 'ADMINISTRADOR');
 
     const areas = ref([]);
     const articulos = ref([]);
     const sedes = ref([]);
+    const cupos = ref({}); // {codigo_articulo: {acumulado, maximo, pct}} — semáforo de techo (sección 4.1)
 
     const areaId = ref('');
     const anio = ref(new Date().getFullYear());
@@ -38,11 +40,16 @@ createApp({
     const fechaVale = ref('');
 
     const diasDelMes = computed(() => new Date(anio.value, mes.value, 0).getDate());
+    function claveCelda(codigo, dia) { return codigo + '|' + dia; }
+    function fechaIso(dia) {
+      return anio.value + '-' + String(mes.value).padStart(2, '0') + '-' + String(dia).padStart(2, '0');
+    }
+    function diaSemana(dia) { return DIAS_SEMANA_CORTO[new Date(anio.value, mes.value - 1, dia).getDay()]; }
+    function esFinde(dia) { const d = new Date(anio.value, mes.value - 1, dia).getDay(); return d === 0 || d === 6; }
 
-    /** Permiso del usuario actual sobre el área seleccionada (null si no aplica, p.ej. viendo como admin). */
     const permisoAreaActual = computed(() => {
       if (!sesion.value) return null;
-      if (esAdmin.value) return 'APROBACION'; // el admin siempre puede todo
+      if (esAdmin.value) return 'APROBACION';
       const asignacion = sesion.value.servicios_asignados.find((s) => String(s.servicio_id) === String(areaId.value));
       return asignacion ? asignacion.permiso : null;
     });
@@ -50,22 +57,20 @@ createApp({
     const puedeEnviar = computed(() => permisoAreaActual.value === 'APROBACION');
     const soloLectura = computed(() => !cabecera.value || cabecera.value.estatus !== 'BORRADOR' || !puedeEscribir.value);
 
-    function claveCelda(codigo, dia) { return codigo + '|' + dia; }
-    function fechaIso(dia) {
-      return anio.value + '-' + String(mes.value).padStart(2, '0') + '-' + String(dia).padStart(2, '0');
-    }
-
-    async function cargarSesion() {
-      sesion.value = await gsRun('apiObtenerSesion');
-    }
+    // ---- Carga inicial ----
+    async function cargarSesion() { sesion.value = await gsRun('apiObtenerSesion'); }
 
     async function cargarCatalogos() {
       [areas.value, articulos.value, sedes.value] = await Promise.all([
-        gsRun('apiListarAreasServicio'), // ya viene acotado por servicio en el servidor
-        gsRun('apiListarArticulos'),
-        gsRun('apiListarSedes'),
+        gsRun('apiListarAreasServicio'), gsRun('apiListarArticulos'), gsRun('apiListarSedes'),
       ]);
       if (areas.value.length && !areaId.value) areaId.value = areas.value[0].area_id;
+    }
+
+    async function cargarCupos() {
+      if (!areaId.value) return;
+      try { cupos.value = await gsRun('apiObtenerCuposServicio', areaId.value); }
+      catch (e) { cupos.value = {}; } // no bloquea la vista si el servicio no tiene sede/almacén asignado aún
     }
 
     async function cargarProgramacion() {
@@ -83,6 +88,7 @@ createApp({
           codigos.add(d.codigo_articulo);
         });
         articulosVisibles.value = Array.from(codigos);
+        await cargarCupos();
       } catch (e) {
         error.value = String(e);
       } finally {
@@ -92,14 +98,9 @@ createApp({
 
     async function crearProgramacion() {
       cargando.value = true;
-      try {
-        await gsRun('apiCrearProgramacionMensual', areaId.value, anio.value, mes.value);
-        await cargarProgramacion();
-      } catch (e) {
-        error.value = String(e);
-      } finally {
-        cargando.value = false;
-      }
+      try { await gsRun('apiCrearProgramacionMensual', areaId.value, anio.value, mes.value); await cargarProgramacion(); }
+      catch (e) { error.value = String(e); }
+      finally { cargando.value = false; }
     }
 
     function agregarArticuloVisible() {
@@ -109,22 +110,185 @@ createApp({
       articuloParaAgregar.value = '';
     }
 
-    async function guardarCelda(codigo, dia) {
-      const valor = Number(detalle[claveCelda(codigo, dia)] || 0);
-      try {
-        await gsRun('apiGuardarCantidadProgramada', cabecera.value.programacion_id, codigo, fechaIso(dia), valor);
-      } catch (e) {
-        error.value = String(e);
-      }
-    }
-
     function descripcionArticulo(codigo) {
       const a = articulos.value.find((x) => x.codigo_articulo === codigo);
       return a ? a.descripcion + ' (' + a.unidad_clave + ')' : codigo;
     }
 
-    async function enviarInformacion() {
-      if (!confirm('¿Enviar la información de este mes? Después de enviar, esta pestaña queda en solo lectura hasta que un administrador la reabra.')) return;
+    // ---- Guardado con cola + debounce (sección 5: Offline-First & Debounce) ----
+    // Optimista: la celda ya se ve actualizada en el momento (v-model), y en paralelo
+    // se agrupan los cambios de los últimos 400ms para mandarlos en un solo lote.
+    const colaCambios = new Map(); // "codigo|dia" -> {codigo_articulo, fecha, cantidad_programada}
+    let temporizadorGuardado = null;
+    const estadoSync = ref('guardado'); // 'guardado' | 'sincronizando' | 'error'
+
+    function encolarCambio(codigo, dia, valor) {
+      colaCambios.set(claveCelda(codigo, dia), { codigo_articulo: codigo, fecha: fechaIso(dia), cantidad_programada: Number(valor) || 0 });
+      estadoSync.value = 'sincronizando';
+      if (temporizadorGuardado) clearTimeout(temporizadorGuardado);
+      temporizadorGuardado = setTimeout(flushCola, 400);
+    }
+
+    async function flushCola() {
+      temporizadorGuardado = null;
+      if (colaCambios.size === 0 || !cabecera.value) return;
+      const cambios = Array.from(colaCambios.values());
+      colaCambios.clear();
+      try {
+        await gsRun('apiGuardarLoteCantidades', cabecera.value.programacion_id, cambios);
+        estadoSync.value = 'guardado';
+      } catch (e) {
+        estadoSync.value = 'error';
+        error.value = String(e);
+      }
+    }
+
+    function onCambiarCelda(codigo, dia) {
+      encolarCambio(codigo, dia, detalle[claveCelda(codigo, dia)]);
+    }
+
+    // ---- Navegación total por teclado (sección 2.1) ----
+    const celdaEditando = reactive({ codigo: '', dia: null, valorAnterior: null });
+    function iniciarEdicion(codigo, dia) {
+      celdaEditando.codigo = codigo; celdaEditando.dia = dia;
+      celdaEditando.valorAnterior = detalle[claveCelda(codigo, dia)];
+    }
+
+    function moverFoco(indiceArticulo, dia) {
+      if (indiceArticulo < 0 || indiceArticulo >= articulosVisibles.value.length) return;
+      if (dia < 1 || dia > diasDelMes.value) return;
+      const codigo = articulosVisibles.value[indiceArticulo];
+      const el = document.querySelector('input[data-codigo="' + CSS.escape(codigo) + '"][data-dia="' + dia + '"]');
+      if (el) { el.focus(); el.select(); }
+    }
+
+    function onKeydownCelda(event, codigo, dia) {
+      const idx = articulosVisibles.value.indexOf(codigo);
+      if (event.key === 'ArrowUp') { event.preventDefault(); moverFoco(idx - 1, dia); }
+      else if (event.key === 'ArrowDown') { event.preventDefault(); moverFoco(idx + 1, dia); }
+      else if (event.key === 'ArrowLeft' && event.target.selectionStart === 0) { event.preventDefault(); moverFoco(idx, dia - 1); }
+      else if (event.key === 'ArrowRight' && event.target.selectionStart === String(event.target.value).length) { event.preventDefault(); moverFoco(idx, dia + 1); }
+      else if (event.key === 'Enter') {
+        event.preventDefault();
+        if (temporizadorGuardado) clearTimeout(temporizadorGuardado);
+        flushCola();
+        moverFoco(idx + 1, dia);
+      } else if (event.key === 'Escape') {
+        detalle[claveCelda(codigo, dia)] = celdaEditando.valorAnterior;
+        event.target.blur();
+      }
+      // Tab: se deja el comportamiento nativo del navegador (avanza al siguiente <input>
+      // del DOM, que es exactamente el día siguiente de la misma fila).
+    }
+
+    // ---- Portapapeles inteligente (sección 2.2): pegar un rango de Excel ----
+    function onPasteCelda(event, codigoInicio, diaInicio) {
+      const texto = (event.clipboardData || window.clipboardData).getData('text');
+      if (!texto) return;
+      const pareceTabla = texto.indexOf('\t') !== -1 || texto.indexOf('\n') !== -1;
+      if (!pareceTabla && !/^\s*-?\d+(\.\d+)?\s*$/.test(texto)) return; // deja el pegado normal del navegador
+      event.preventDefault();
+
+      const indiceInicio = articulosVisibles.value.indexOf(codigoInicio);
+      const filas = texto.replace(/\r/g, '').split('\n').filter((linea, i, arr) => !(i === arr.length - 1 && linea === ''));
+      filas.forEach((linea, deltaFila) => {
+        const codigo = articulosVisibles.value[indiceInicio + deltaFila];
+        if (!codigo) return; // no hay más filas visibles hacia abajo
+        linea.split('\t').forEach((celda, deltaCol) => {
+          const dia = diaInicio + deltaCol;
+          if (dia < 1 || dia > diasDelMes.value) return;
+          const valor = Number(String(celda).trim().replace(',', '.'));
+          if (!Number.isFinite(valor)) return;
+          detalle[claveCelda(codigo, dia)] = valor;
+          encolarCambio(codigo, dia, valor);
+        });
+      });
+    }
+
+    // ---- Command Palette (Ctrl+K) — sección 2.3 ----
+    const paletaAbierta = ref(false);
+    const paletaTexto = ref('');
+    const inputPaleta = ref(null);
+    const filaResaltada = ref('');
+    const resultadosPaleta = computed(() => {
+      const q = paletaTexto.value.trim().toLowerCase();
+      if (!q) return [];
+      return articulos.value
+        .filter((a) => a.codigo_articulo.toLowerCase().indexOf(q) !== -1 || a.descripcion.toLowerCase().indexOf(q) !== -1)
+        .slice(0, 20);
+    });
+    function abrirPaleta() {
+      paletaAbierta.value = true;
+      paletaTexto.value = '';
+      nextTick(() => inputPaleta.value && inputPaleta.value.focus());
+    }
+    function seleccionarResultadoPaleta(art) {
+      if (articulosVisibles.value.indexOf(art.codigo_articulo) === -1) articulosVisibles.value.push(art.codigo_articulo);
+      paletaAbierta.value = false;
+      filaResaltada.value = art.codigo_articulo;
+      setTimeout(() => { if (filaResaltada.value === art.codigo_articulo) filaResaltada.value = ''; }, 1600);
+      nextTick(() => {
+        const fila = document.querySelector('tr[data-fila-articulo="' + CSS.escape(art.codigo_articulo) + '"]');
+        if (fila) fila.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+    }
+    function manejarAtajoGlobal(event) {
+      const combo = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k';
+      if (combo) { event.preventDefault(); abrirPaleta(); }
+      else if (event.key === 'Escape' && paletaAbierta.value) { paletaAbierta.value = false; }
+    }
+
+    // ---- Micro-métricas: totales, semáforo de techo, sparkline (sección 4) ----
+    function totalArticulo(codigo) {
+      let total = 0;
+      for (let d = 1; d <= diasDelMes.value; d++) total += Number(detalle[claveCelda(codigo, d)]) || 0;
+      return total;
+    }
+    function pctTecho(codigo) {
+      const c = cupos.value[codigo];
+      return c ? c.pct : null;
+    }
+    function colorTecho(pct) {
+      if (pct === null || pct === undefined) return '';
+      if (pct > 0.95) return 'techo-rojo';
+      if (pct > 0.75) return 'techo-ambar';
+      return 'techo-verde';
+    }
+    function sparklinePoints(codigo) {
+      const ancho = 56, alto = 14;
+      const valores = [];
+      for (let d = 1; d <= diasDelMes.value; d++) valores.push(Number(detalle[claveCelda(codigo, d)]) || 0);
+      const max = Math.max(1, ...valores);
+      const paso = ancho / Math.max(1, valores.length - 1);
+      return valores.map((v, i) => (i * paso).toFixed(1) + ',' + (alto - (v / max) * alto).toFixed(1)).join(' ');
+    }
+
+    // Barra de resumen viva (sección 4.3)
+    const totalUnidadesVivo = computed(() => articulosVisibles.value.reduce((acc, c) => acc + totalArticulo(c), 0));
+    const totalImporteVivo = computed(() => articulosVisibles.value.reduce((acc, codigo) => {
+      const art = articulos.value.find((a) => a.codigo_articulo === codigo);
+      return acc + (art && art.precio_unitario ? totalArticulo(codigo) * art.precio_unitario : 0);
+    }, 0));
+
+    // ---- Envío: modal de validación previa (Pre-Flight) — sección 6.1 ----
+    const modalEnviarAbierto = ref(false);
+    const resumenPreEnvio = computed(() => {
+      const altoCupo = [];
+      articulosVisibles.value.forEach((codigo) => {
+        if (totalArticulo(codigo) <= 0) return;
+        const pct = pctTecho(codigo);
+        if (pct !== null && pct >= 0.90) altoCupo.push({ codigo, descripcion: descripcionArticulo(codigo), pct });
+      });
+      return {
+        totalArticulos: articulosVisibles.value.filter((c) => totalArticulo(c) > 0).length,
+        totalUnidades: totalUnidadesVivo.value,
+        totalImporte: totalImporteVivo.value,
+        altoCupo,
+      };
+    });
+    function abrirModalEnviar() { modalEnviarAbierto.value = true; }
+    async function confirmarEnvio() {
+      modalEnviarAbierto.value = false;
       cargando.value = true;
       try {
         await gsRun('apiEnviarCarga', cabecera.value.programacion_id);
@@ -139,15 +303,9 @@ createApp({
 
     async function reabrirCargaActual() {
       cargando.value = true;
-      try {
-        await gsRun('apiReabrirCarga', cabecera.value.programacion_id);
-        aviso.value = 'Carga reabierta.';
-        await cargarProgramacion();
-      } catch (e) {
-        error.value = String(e);
-      } finally {
-        cargando.value = false;
-      }
+      try { await gsRun('apiReabrirCarga', cabecera.value.programacion_id); aviso.value = 'Carga reabierta.'; await cargarProgramacion(); }
+      catch (e) { error.value = String(e); }
+      finally { cargando.value = false; }
     }
 
     async function generarVale() {
@@ -157,11 +315,8 @@ createApp({
         const url = await gsRun('apiGenerarValePedido', areaId.value, fechaVale.value);
         aviso.value = 'Vale generado.';
         window.open(url, '_blank');
-      } catch (e) {
-        error.value = String(e);
-      } finally {
-        cargando.value = false;
-      }
+      } catch (e) { error.value = String(e); }
+      finally { cargando.value = false; }
     }
 
     // ---- Administración ----
@@ -173,83 +328,64 @@ createApp({
     async function cargarAdmin() {
       if (!esAdmin.value) return;
       cargando.value = true;
-      try {
-        [usuarios.value, consolidadoGeneral.value] = await Promise.all([
-          gsRun('apiListarUsuarios'),
-          gsRun('apiListarConsolidadoGeneral'),
-        ]);
-      } catch (e) {
-        error.value = String(e);
-      } finally {
-        cargando.value = false;
-      }
+      try { [usuarios.value, consolidadoGeneral.value] = await Promise.all([gsRun('apiListarUsuarios'), gsRun('apiListarConsolidadoGeneral')]); }
+      catch (e) { error.value = String(e); }
+      finally { cargando.value = false; }
     }
-
     async function crearUsuario() {
       try {
         await gsRun('apiGuardarUsuario', Object.assign({}, nuevoUsuario));
         nuevoUsuario.correo = ''; nuevoUsuario.nombre = ''; nuevoUsuario.rol = 'CAPTURISTA';
         aviso.value = 'Usuario creado.';
         await cargarAdmin();
-      } catch (e) {
-        error.value = String(e);
-      }
+      } catch (e) { error.value = String(e); }
     }
-
     async function asignarServicio() {
       try {
         await gsRun('apiAsignarServicio', nuevaAsignacion.usuario_id, nuevaAsignacion.area_id, nuevaAsignacion.permiso);
         aviso.value = 'Servicio asignado.';
         await cargarAdmin();
-      } catch (e) {
-        error.value = String(e);
-      }
+      } catch (e) { error.value = String(e); }
     }
-
     async function revocarServicio(usuarioId, areaId2) {
-      try {
-        await gsRun('apiRevocarServicio', usuarioId, areaId2);
-        await cargarAdmin();
-      } catch (e) {
-        error.value = String(e);
-      }
+      try { await gsRun('apiRevocarServicio', usuarioId, areaId2); await cargarAdmin(); }
+      catch (e) { error.value = String(e); }
     }
-
     async function cambiarPestana(nombre) {
       pestana.value = nombre;
       if (nombre === 'admin') await cargarAdmin();
     }
 
     onMounted(async () => {
+      window.addEventListener('keydown', manejarAtajoGlobal);
       cargando.value = true;
-      try {
-        await cargarSesion();
-        await cargarCatalogos();
-        await cargarProgramacion();
-      } catch (e) {
-        error.value = String(e);
-      } finally {
-        cargando.value = false;
-      }
+      try { await cargarSesion(); await cargarCatalogos(); await cargarProgramacion(); }
+      catch (e) { error.value = String(e); }
+      finally { cargando.value = false; }
     });
 
     return {
       cargando, error, aviso, pestana, sesion, esAdmin,
       areas, articulos, sedes, areaId, anio, mes, MESES,
       cabecera, detalle, diasDelMes, articulosVisibles, articuloParaAgregar, fechaVale,
-      soloLectura, puedeEnviar,
-      cargarProgramacion, crearProgramacion, agregarArticuloVisible, guardarCelda,
-      descripcionArticulo, generarVale, claveCelda, enviarInformacion, reabrirCargaActual,
+      soloLectura, puedeEnviar, diaSemana, esFinde,
+      cargarProgramacion, crearProgramacion, agregarArticuloVisible,
+      descripcionArticulo, generarVale, claveCelda, reabrirCargaActual,
+      onCambiarCelda, onKeydownCelda, onPasteCelda, iniciarEdicion, estadoSync,
+      paletaAbierta, paletaTexto, inputPaleta, resultadosPaleta, abrirPaleta, seleccionarResultadoPaleta, filaResaltada,
+      totalArticulo, pctTecho, colorTecho, sparklinePoints, totalUnidadesVivo, totalImporteVivo,
+      modalEnviarAbierto, resumenPreEnvio, abrirModalEnviar, confirmarEnvio,
       usuarios, consolidadoGeneral, nuevoUsuario, nuevaAsignacion,
       crearUsuario, asignarServicio, revocarServicio, cambiarPestana,
     };
   },
   template: `
-    <div class="max-w-7xl mx-auto p-4">
+    <div class="max-w-[1600px] mx-auto p-4">
       <div class="flex items-center justify-between mb-1">
         <h1 class="text-xl font-bold">Dietología — Programación mensual y almacén</h1>
         <div v-if="sesion" class="text-xs text-slate-500 text-right">
           {{ sesion.nombre || sesion.correo }} · <span class="font-semibold">{{ sesion.rol }}</span>
+          <span class="ml-2 text-slate-400">Ctrl+K para buscar un artículo</span>
         </div>
       </div>
       <p class="text-sm text-slate-500 mb-4">Herramienta interna — Hospital Civil de Guadalajara</p>
@@ -287,12 +423,25 @@ createApp({
               <option v-for="(nombre, i) in MESES" :key="i" :value="i + 1">{{ nombre }}</option>
             </select>
           </div>
-          <div v-if="cabecera" class="text-xs px-2 py-1 rounded"
-               :class="cabecera.estatus==='BORRADOR' ? 'bg-amber-100 text-amber-800' : 'bg-slate-200 text-slate-700'">
-            Estatus: {{ cabecera.estatus }}
-            <span v-if="cabecera.fecha_envio"> · enviado {{ cabecera.fecha_envio.slice(0,10) }}</span>
+          <div v-if="cabecera" class="text-xs px-2 py-1 rounded font-medium"
+               :class="cabecera.estatus==='BORRADOR' ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'">
+            {{ cabecera.estatus==='BORRADOR' ? 'BORRADOR' : 'Carga Enviada y Bloqueada' }}
+            <span v-if="cabecera.fecha_envio" class="font-normal"> · enviado {{ cabecera.fecha_envio.slice(0,10) }}</span>
           </div>
           <div v-if="cargando" class="text-sm text-slate-500">Cargando…</div>
+
+          <!-- Indicador de sincronización — sección 5 -->
+          <div v-if="cabecera && !soloLectura" class="flex items-center gap-1.5 text-xs text-slate-500 ml-auto">
+            <span class="punto-sync" :class="{'bg-emerald-500': estadoSync==='guardado', 'bg-amber-500': estadoSync==='sincronizando', 'bg-red-500': estadoSync==='error'}"></span>
+            {{ estadoSync==='guardado' ? 'Guardado' : estadoSync==='sincronizando' ? 'Sincronizando…' : 'Error de conexión' }}
+          </div>
+        </div>
+
+        <!-- Barra de resumen viva — sección 4.3 -->
+        <div v-if="cabecera" class="sticky top-0 z-10 bg-slate-800 text-white rounded px-4 py-2 mb-3 flex flex-wrap gap-x-6 gap-y-1 text-sm">
+          <div><span class="text-slate-300">Artículos con demanda:</span> <span class="font-semibold">{{ articulosVisibles.filter(c => totalArticulo(c) > 0).length }}</span></div>
+          <div><span class="text-slate-300">Unidades programadas:</span> <span class="font-semibold">{{ totalUnidadesVivo }}</span></div>
+          <div><span class="text-slate-300">Presupuesto Total Programado:</span> <span class="font-semibold">\${{ totalImporteVivo.toLocaleString('es-MX', {minimumFractionDigits:2, maximumFractionDigits:2}) }} MXN</span></div>
         </div>
 
         <div v-if="!cabecera && !cargando" class="bg-white border rounded p-4 mb-4">
@@ -310,24 +459,42 @@ createApp({
               </select>
             </div>
             <button @click="agregarArticuloVisible" :disabled="soloLectura" class="bg-slate-200 text-sm px-3 py-1.5 rounded disabled:opacity-50">Agregar</button>
+            <button @click="abrirPaleta" class="bg-white border text-sm px-3 py-1.5 rounded text-slate-600">🔍 Buscar (Ctrl+K)</button>
           </div>
 
-          <div class="overflow-x-auto max-h-[60vh] border rounded">
-            <table class="text-xs sticky-first-col">
+          <div class="overflow-x-auto max-h-[60vh] border rounded" :class="{'opacity-90': soloLectura}">
+            <table class="text-xs freeze-panes w-full">
               <thead class="sticky top-0 bg-slate-100">
                 <tr>
-                  <th class="px-2 py-1 text-left border-b border-r">Artículo</th>
-                  <th v-for="d in diasDelMes" :key="d" class="px-1 py-1 border-b text-center">{{ d }}</th>
+                  <th class="col-fija-izq px-2 py-1 text-left border-b border-r bg-slate-100" style="min-width:230px">Artículo</th>
+                  <th v-for="d in diasDelMes" :key="d" :class="['px-1 py-1 border-b text-center', esFinde(d) ? 'dia-finde' : '']" style="min-width:2.3rem">
+                    <div>{{ d }}</div><div class="text-[9px] text-slate-400">{{ diaSemana(d) }}</div>
+                  </th>
+                  <th class="col-fija-der px-2 py-1 border-b border-l bg-slate-100 text-left" style="min-width:9rem">Total / Techo / Tendencia</th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="codigo in articulosVisibles" :key="codigo" class="odd:bg-white even:bg-slate-50">
-                  <td class="px-2 py-1 border-r whitespace-nowrap">{{ descripcionArticulo(codigo) }}</td>
-                  <td v-for="d in diasDelMes" :key="d" class="p-0.5">
-                    <input type="number" min="0" :disabled="soloLectura"
+                <tr v-for="codigo in articulosVisibles" :key="codigo" :data-fila-articulo="codigo"
+                    :class="['odd:bg-white even:bg-slate-50', {'fila-resaltada': filaResaltada===codigo}]">
+                  <td class="col-fija-izq px-2 py-1 border-r whitespace-nowrap bg-inherit" :title="descripcionArticulo(codigo)">{{ descripcionArticulo(codigo) }}</td>
+                  <td v-for="d in diasDelMes" :key="d" :class="['p-0.5', esFinde(d) ? 'dia-finde' : '']">
+                    <input type="number" min="0" :disabled="soloLectura" :data-codigo="codigo" :data-dia="d"
                            class="celda-cantidad border rounded px-1 py-0.5 text-right disabled:bg-slate-100 disabled:text-slate-400"
                            v-model.number="detalle[claveCelda(codigo, d)]"
-                           @change="guardarCelda(codigo, d)">
+                           @focus="iniciarEdicion(codigo, d)"
+                           @input="onCambiarCelda(codigo, d)"
+                           @keydown="onKeydownCelda($event, codigo, d)"
+                           @paste="onPasteCelda($event, codigo, d)">
+                  </td>
+                  <td class="col-fija-der bg-inherit border-l px-2 py-1 align-top" style="min-width:9rem">
+                    <div class="flex items-center justify-between text-[11px]">
+                      <span class="font-semibold">{{ totalArticulo(codigo) }}</span>
+                      <span v-if="pctTecho(codigo)!==null" class="text-slate-400">{{ (pctTecho(codigo)*100).toFixed(0) }}%</span>
+                    </div>
+                    <div v-if="pctTecho(codigo)!==null" class="barra-techo mt-0.5 mb-1">
+                      <div :class="colorTecho(pctTecho(codigo))" :style="{width: Math.min(100, pctTecho(codigo)*100) + '%'}"></div>
+                    </div>
+                    <svg width="56" height="14" class="text-slate-400"><polyline :points="sparklinePoints(codigo)" fill="none" stroke="currentColor" stroke-width="1"/></svg>
                   </td>
                 </tr>
               </tbody>
@@ -335,15 +502,17 @@ createApp({
           </div>
 
           <div class="flex gap-2 mt-3">
-            <button v-if="puedeEnviar && cabecera.estatus==='BORRADOR'" @click="enviarInformacion"
-                    class="bg-emerald-700 text-white text-sm px-3 py-1.5 rounded">Enviar información</button>
+            <button v-if="puedeEnviar && cabecera.estatus==='BORRADOR'" @click="abrirModalEnviar"
+                    class="bg-emerald-700 text-white text-sm px-3 py-1.5 rounded">Revisar y Enviar</button>
             <button v-if="esAdmin && cabecera.estatus==='ENVIADO'" @click="reabrirCargaActual"
                     class="bg-amber-600 text-white text-sm px-3 py-1.5 rounded">Reabrir carga</button>
           </div>
         </div>
 
         <div v-if="cabecera" class="bg-white border rounded p-3">
-          <h2 class="font-semibold text-sm mb-2">Generar Vale de Pedido al Almacén</h2>
+          <h2 class="font-semibold text-sm mb-2">
+            {{ cabecera.estatus==='BORRADOR' ? 'Generar Vale de Pedido al Almacén' : 'Descargar PDF / Vale' }}
+          </h2>
           <div class="flex gap-2 items-end">
             <div>
               <label class="block text-xs text-slate-500">Fecha</label>
@@ -413,6 +582,44 @@ createApp({
                 </tr>
               </tbody>
             </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== Command Palette (Ctrl+K) — sección 2.3 ===== -->
+      <div v-if="paletaAbierta" class="fixed inset-0 bg-black/30 flex items-start justify-center pt-24 z-50" @click.self="paletaAbierta=false">
+        <div class="bg-white rounded shadow-lg w-full max-w-lg overflow-hidden">
+          <input ref="inputPaleta" v-model="paletaTexto" placeholder="Código o descripción del insumo… (Esc para cerrar)"
+                 class="w-full px-4 py-3 text-sm border-b outline-none">
+          <div class="max-h-80 overflow-y-auto">
+            <button v-for="a in resultadosPaleta" :key="a.codigo_articulo" @click="seleccionarResultadoPaleta(a)"
+                    class="block w-full text-left px-4 py-2 text-sm hover:bg-slate-100">
+              <span class="font-mono text-slate-500">{{ a.codigo_articulo }}</span> — {{ a.descripcion }}
+            </button>
+            <div v-if="paletaTexto && resultadosPaleta.length===0" class="px-4 py-3 text-sm text-slate-400">Sin resultados.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== Modal de validación previa al envío — sección 6.1 ===== -->
+      <div v-if="modalEnviarAbierto" class="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
+        <div class="bg-white rounded shadow-lg w-full max-w-md p-5">
+          <h3 class="font-semibold mb-3">Confirmar envío de la programación</h3>
+          <ul class="text-sm space-y-1 mb-3">
+            <li>Artículos con demanda registrada: <span class="font-semibold">{{ resumenPreEnvio.totalArticulos }}</span></li>
+            <li>Unidades totales: <span class="font-semibold">{{ resumenPreEnvio.totalUnidades }}</span></li>
+            <li>Presupuesto estimado: <span class="font-semibold">\${{ resumenPreEnvio.totalImporte.toLocaleString('es-MX', {minimumFractionDigits:2, maximumFractionDigits:2}) }} MXN</span></li>
+          </ul>
+          <div v-if="resumenPreEnvio.altoCupo.length" class="bg-amber-50 border border-amber-200 rounded p-2 mb-3 text-xs">
+            <p class="font-semibold text-amber-800 mb-1">⚠ {{ resumenPreEnvio.altoCupo.length }} insumo(s) por encima del 90% de su cupo adjudicado:</p>
+            <ul class="list-disc list-inside text-amber-700">
+              <li v-for="a in resumenPreEnvio.altoCupo" :key="a.codigo">{{ a.descripcion }} — {{ (a.pct*100).toFixed(0) }}%</li>
+            </ul>
+          </div>
+          <p class="text-xs text-slate-500 mb-4">Al confirmar, la información se consolidará en el Resumen Global y la edición quedará bloqueada hasta que un administrador la reabra.</p>
+          <div class="flex justify-end gap-2">
+            <button @click="modalEnviarAbierto=false" class="text-sm px-3 py-1.5 rounded border">Cancelar</button>
+            <button @click="confirmarEnvio" class="bg-emerald-700 text-white text-sm px-3 py-1.5 rounded">Confirmar y enviar</button>
           </div>
         </div>
       </div>

@@ -94,6 +94,28 @@ function guardarCupoContractualSede(datos) {
 }
 
 /**
+ * Techo contractual por artículo para una sede, como {codigo_articulo:
+ * {acumulado, maximo, pct}} — es la fuente del semáforo de techo
+ * presupuestal de la interfaz (verde ≤75%, ámbar 76-95%, rojo >95%).
+ */
+function obtenerCuposPorSede_(sedeId) {
+  const contratos = leerFilas_('contrato_articulo');
+  const resultado = {};
+  leerFilas_('cupo_contractual_sede')
+    .filter((f) => f.sede_id === sedeId)
+    .forEach((f) => {
+      const contrato = contratos.find((c) => String(c.contrato_articulo_id) === String(f.contrato_articulo_id));
+      if (!contrato) return;
+      const maximo = Number(f.cantidad_maxima_anual);
+      const acumulado = Number(f.cantidad_acumulada_ejercicio);
+      resultado[contrato.codigo_articulo] = {
+        acumulado: acumulado, maximo: maximo, pct: maximo > 0 ? acumulado / maximo : 0,
+      };
+    });
+  return resultado;
+}
+
+/**
  * Acumula cantidad contra el techo contractual de una sede (se llama al
  * confirmar una orden_suministro_detalle). Lanza error si se excede el
  * máximo — el mismo CHECK (cantidad_acumulada_ejercicio <= cantidad_maxima_anual)

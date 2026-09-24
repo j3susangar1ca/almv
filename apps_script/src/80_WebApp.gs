@@ -53,9 +53,14 @@ function apiListarAreasServicio() {
 
 function apiListarArticulos() {
   const unidades = leerFilas_('unidad_medida');
+  const contratos = leerFilas_('contrato_articulo');
   return leerFilas_('articulo').filter((f) => f.activo).map((a) => {
     const u = unidades.find((x) => Number(x.unidad_id) === Number(a.unidad_id));
-    return Object.assign(limpiarFila_(a), { unidad_clave: u ? u.clave : '' });
+    const contrato = contratos.find((c) => c.codigo_articulo === a.codigo_articulo && c.activo === true);
+    return Object.assign(limpiarFila_(a), {
+      unidad_clave: u ? u.clave : '',
+      precio_unitario: contrato ? Number(contrato.precio_unitario) : null, // para el resumen $ de la barra sticky
+    });
   });
 }
 
@@ -84,6 +89,18 @@ function apiGuardarCantidadProgramada(programacionId, codigoArticulo, fecha, can
   return guardarProgramacionDetalle({
     programacion_id: programacionId, codigo_articulo: codigoArticulo, fecha: fecha, cantidad_programada: cantidad,
   });
+}
+
+/** Guardado por lote: el frontend agrupa varias celdas modificadas (debounce) y las manda en una sola llamada. */
+function apiGuardarLoteCantidades(programacionId, cambios) {
+  return guardarLoteProgramacionDetalle(programacionId, cambios);
+}
+
+/** Techo contractual por artículo para el servicio dado (semáforo de techo presupuestal). */
+function apiObtenerCuposServicio(areaId) {
+  requiereAcceso_(areaId, 'LECTURA');
+  const sedeId = sedeDeArea_(areaId);
+  return sedeId ? obtenerCuposPorSede_(sedeId) : {};
 }
 
 function apiCrearProgramacionMensual(areaId, anio, mes) {

@@ -2,6 +2,30 @@
 <style>
   /* Ajustes menores que Tailwind por CDN no cubre por sí solo */
   .celda-cantidad { width: 3.5rem; }
-  table.sticky-first-col th:first-child,
-  table.sticky-first-col td:first-child { position: sticky; left: 0; background: white; }
+
+  /* Freeze panes: panel izquierdo (código/descripción/UM) y derecho (totales/techo) fijos
+     mientras el panel central (días) hace scroll horizontal — sección 3 del documento de UX. */
+  table.freeze-panes th.col-fija-izq,
+  table.freeze-panes td.col-fija-izq { position: sticky; left: 0; background: inherit; z-index: 1; }
+  table.freeze-panes th.col-fija-der,
+  table.freeze-panes td.col-fija-der { position: sticky; right: 0; background: inherit; z-index: 1; }
+  table.freeze-panes thead th { z-index: 2; }
+  table.freeze-panes thead th.col-fija-izq,
+  table.freeze-panes thead th.col-fija-der { z-index: 3; }
+
+  .dia-finde { background-color: rgba(248, 250, 252, 0.9); } /* sábado/domingo, sutil, sección 3.2 */
+
+  .fila-resaltada { animation: resaltar-fila 1.6s ease-out; }
+  @keyframes resaltar-fila { from { background-color: #fef08a; } to { background-color: transparent; } }
+
+  /* Semáforo de techo presupuestal — sección 4.1 */
+  .barra-techo { height: 3px; border-radius: 2px; background: #e2e8f0; overflow: hidden; }
+  .barra-techo > div { height: 100%; }
+  .techo-verde { background-color: #16a34a; }
+  .techo-ambar { background-color: #d97706; }
+  .techo-rojo { background-color: #dc2626; animation: pulso-rojo 1.2s infinite; }
+  @keyframes pulso-rojo { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+  /* Indicador de sincronización — sección 5 */
+  .punto-sync { width: 0.55rem; height: 0.55rem; border-radius: 9999px; display: inline-block; }
 </style>
