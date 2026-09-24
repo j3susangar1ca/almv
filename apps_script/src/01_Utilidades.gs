@@ -11,20 +11,41 @@ function hoja_(nombre) {
   return sheet;
 }
 
-/** Lee todas las filas de una pestaña como arreglo de objetos {columna: valor}. */
+/**
+ * Lee todas las filas de una pestaña como arreglo de objetos {columna: valor}.
+ * Las columnas de fecha (ver COLUMNAS_FECHA/aplicarValidacionesColumna_) tienen
+ * formato de número "yyyy-mm-dd" en la hoja: en cuanto se escribe un texto con
+ * pinta de fecha en una celda así, Sheets lo reinterpreta como un valor Date
+ * real, así que getValues() los regresa como objetos Date, no como el texto
+ * que se guardó originalmente. Se normalizan aquí, en el único punto común de
+ * lectura, de vuelta a texto "yyyy-mm-dd": el resto del código (comparaciones
+ * tipo f.fecha >= fechaInicio, fecha.split('-') en el frontend) asume texto, y
+ * un objeto Date que llega tal cual hasta google.script.run se descarta en
+ * silencio — el cliente recibe null en vez de un error (no se puede serializar
+ * un Date de vuelta al navegador).
+ */
 function leerFilas_(nombreHoja) {
   const sheet = hoja_(nombreHoja);
   const rango = sheet.getDataRange().getValues();
   if (rango.length < 2) return [];
   const headers = rango[0];
+  const zonaHoraria = CONFIG_().TIMEZONE || 'America/Mexico_City'; // una sola lectura de propiedades por llamada, no por celda
   const filas = [];
   for (let r = 1; r < rango.length; r++) {
     const fila = {};
-    headers.forEach((h, i) => { fila[h] = rango[r][i]; });
+    headers.forEach((h, i) => {
+      const valor = rango[r][i];
+      fila[h] = (valor instanceof Date) ? formatearFecha_(valor, zonaHoraria) : valor;
+    });
     fila._row = r + 1; // fila real en el Sheet (1-indexada), útil para actualizar/borrar
     filas.push(fila);
   }
   return filas;
+}
+
+/** Formatea un Date real (ver leerFilas_) como texto "yyyy-mm-dd", igual que hoy_(). */
+function formatearFecha_(fecha, zonaHoraria) {
+  return Utilities.formatDate(fecha, zonaHoraria || CONFIG_().TIMEZONE || 'America/Mexico_City', 'yyyy-MM-dd');
 }
 
 /** Agrega una fila nueva al final, respetando el orden de columnas del esquema. */
@@ -90,5 +111,5 @@ function conLock_(fn) {
 }
 
 function hoy_() {
-  return Utilities.formatDate(new Date(), CONFIG_().TIMEZONE || 'America/Mexico_City', 'yyyy-MM-dd');
+  return formatearFecha_(new Date());
 }
