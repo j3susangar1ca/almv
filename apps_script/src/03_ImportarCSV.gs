@@ -23,7 +23,8 @@
  *   3. Ejecuta importarTodosLosCSV('ese_id') desde el editor.
  */
 function importarTodosLosCSV(idCarpetaDrive) {
-  const carpeta = DriveApp.getFolderById(idCarpetaDrive);
+  const folderId = idCarpetaDrive || CONFIG_().CARPETA_CSV_ID || '1uKZQ1RKhq71fuUaq--XbRTNYKT3RhnF4';
+  const carpeta = DriveApp.getFolderById(folderId);
   const resultados = [];
 
   // 1) Catálogos que se importan sin transformación de forma
@@ -132,7 +133,11 @@ function importarTodosLosCSV(idCarpetaDrive) {
   }
 
   Logger.log(resultados.join('\n'));
-  SpreadsheetApp.getUi().alert(resultados.join('\n'));
+  try {
+    SpreadsheetApp.getUi().alert(resultados.join('\n'));
+  } catch (e) {
+    // Si se ejecuta sin interfaz gráfica de UI
+  }
 }
 
 /** Lee un CSV de Drive y lo devuelve como arreglo de objetos {columna: valorTexto}. Null si el archivo no existe. */
