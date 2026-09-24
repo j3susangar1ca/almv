@@ -87,7 +87,7 @@ const ESQUEMA_HOJAS = {
     pk: null, // llave compuesta (almacen_id, codigo_articulo, lote_id); ver 40_Inventario.gs
   },
   programacion_mensual: {
-    headers: ['programacion_id', 'area_id', 'anio', 'mes', 'fecha_elaboracion', 'estatus'],
+    headers: ['programacion_id', 'area_id', 'anio', 'mes', 'fecha_elaboracion', 'estatus', 'fecha_envio', 'enviado_por_usuario_id'],
     pk: 'programacion_id',
   },
   programacion_detalle: {
@@ -107,6 +107,24 @@ const ESQUEMA_HOJAS = {
     headers: ['asignacion_id', 'movimiento_salida_id', 'movimiento_entrada_id', 'cantidad_asignada'],
     pk: 'asignacion_id',
   },
+
+  // --- RBAC, alcance por servicio y consolidación centralizada ---
+  usuarios: {
+    headers: ['usuario_id', 'correo', 'nombre', 'rol', 'activo'],
+    pk: 'usuario_id',
+  },
+  // "servicio" del documento de requerimientos = area_servicio ya existente en el
+  // modelo (GENERAL, PACIENTES, COMEDOR, ...); no se duplica el catálogo, sólo se
+  // referencia por area_id para no tener dos fuentes de verdad del mismo concepto.
+  usuario_servicios: {
+    headers: ['asignacion_id', 'usuario_id', 'area_id', 'permiso'],
+    pk: 'asignacion_id',
+  },
+  consolidado_general: {
+    headers: ['consolidado_id', 'programacion_id', 'area_id', 'codigo_articulo', 'fecha',
+      'cantidad_programada', 'programacion_detalle_id', 'usuario_envio_id', 'fecha_envio'],
+    pk: 'consolidado_id',
+  },
 };
 
 // Tipos de movimiento válidos (antes CHECK de movimiento_inventario.tipo_movimiento)
@@ -122,10 +140,20 @@ const VALIDACIONES_LISTA = {
   licitacion: { estatus: ['EN_PROCESO', 'ADJUDICADA', 'CANCELADA', 'VENCIDA'] },
   orden_suministro: { estatus: ['PENDIENTE', 'PARCIAL', 'RECIBIDA', 'CANCELADA'] },
   movimiento_inventario: { tipo_movimiento: TIPOS_MOVIMIENTO_SALIDA.concat(TIPOS_MOVIMIENTO_ENTRADA) },
-  programacion_mensual: { estatus: ['BORRADOR', 'PUBLICADA', 'CERRADA'] },
+  // BORRADOR -> ENVIADO es todo el ciclo de vida que se modela (ver 31_CicloVida.gs).
+  // Con el Enfoque A de consolidación (transaccional, sección 6.2 del SRS) ENVIADO y
+  // "CONSOLIDADO" ocurren en el mismo paso atómico, así que no se agrega un tercer
+  // estatus: la fuente de verdad de qué quedó consolidado es la pestaña
+  // consolidado_general, no un valor adicional de estatus.
+  programacion_mensual: { estatus: ['BORRADOR', 'ENVIADO'] },
+  usuarios: { rol: ['CAPTURISTA', 'SUPERVISOR', 'ADMINISTRADOR'] },
+  usuario_servicios: { permiso: ['LECTURA', 'ESCRITURA', 'APROBACION'] },
 };
 const COLUMNAS_BOOLEANAS = ['activo', 'es_perecedero', 'requiere_control_lote'];
 const COLUMNAS_FECHA = [
   'fecha_alta', 'fecha_fallo', 'fecha_registro', 'fecha_fabricacion', 'fecha_caducidad',
-  'fecha_recepcion', 'fecha_emision', 'fecha_entrega_programada', 'fecha_elaboracion', 'fecha',
+  'fecha_recepcion', 'fecha_emision', 'fecha_entrega_programada', 'fecha_elaboracion', 'fecha', 'fecha_envio',
 ];
+
+// Jerarquía de permisos por servicio (RBAC), de menor a mayor alcance.
+const NIVEL_PERMISO = { LECTURA: 1, ESCRITURA: 2, APROBACION: 3 };

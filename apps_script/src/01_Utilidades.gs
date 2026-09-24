@@ -92,3 +92,11 @@ function conLock_(fn) {
 function hoy_() {
   return Utilities.formatDate(new Date(), CONFIG_().TIMEZONE || 'America/Mexico_City', 'yyyy-MM-dd');
 }
+
+/** Resuelve la sede (FAA/JIM/ORI/OPD) de un servicio (area_servicio), vía su almacén. Null si no tiene almacén asignado. */
+function sedeDeArea_(areaId) {
+  const area = buscarPorClave_('area_servicio', 'area_id', areaId);
+  if (!area || !area.almacen_id) return null;
+  const almacen = buscarPorClave_('almacen', 'almacen_id', area.almacen_id);
+  return almacen ? almacen.sede_id : null;
+}

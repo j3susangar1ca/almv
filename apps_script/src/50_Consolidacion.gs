@@ -97,18 +97,28 @@ function guardarAsignacionSalidaEntrada(datos) {
  * no se pasa una existente) y registra la trazabilidad en
  * consolidacion_pedido.
  *
+ * Sólo consolida demanda ya ENVIADA por los servicios (lee de
+ * consolidado_general, no de programacion_detalle): mientras una
+ * programación siga en BORRADOR, Compras no debe verla ni convertirla en
+ * OC — es el enlace entre el ciclo de vida de captura (31_CicloVida.gs) y
+ * este motor de compras. Exclusivo de ADMINISTRADOR: consolidar cruza
+ * varios servicios a la vez, no es una acción con alcance de un solo
+ * servicio.
+ *
  * Devuelve { ordenDetalleId, cantidadConsolidada, renglonesConsolidados }.
  */
 function consolidarDemandaEnOC(codigoArticulo, sedeId, fechaInicio, fechaFin, ordenId) {
+  requiereRol_(['ADMINISTRADOR']);
+
   const contrato = leerFilas_('contrato_articulo').find(
     (f) => f.codigo_articulo === codigoArticulo && f.activo === true
   );
   if (!contrato) throw new Error('No hay contrato activo para el artículo ' + codigoArticulo + '; no se puede generar OC.');
 
-  const renglones = leerFilas_('programacion_detalle').filter(
+  const renglones = leerFilas_('consolidado_general').filter(
     (f) => f.codigo_articulo === codigoArticulo && f.fecha >= fechaInicio && f.fecha <= fechaFin && Number(f.cantidad_programada) > 0
   );
-  if (renglones.length === 0) throw new Error('No hay demanda programada para ese artículo en ese rango de fechas.');
+  if (renglones.length === 0) throw new Error('No hay demanda ENVIADA para ese artículo en ese rango de fechas (¿sigue en borrador?).');
 
   const total = renglones.reduce((acc, f) => acc + Number(f.cantidad_programada), 0);
 
