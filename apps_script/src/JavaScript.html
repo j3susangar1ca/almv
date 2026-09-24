@@ -1,0 +1,225 @@
+<script>
+const { createApp, ref, reactive, computed, onMounted } = Vue;
+
+/** Envuelve google.script.run en una Promesa para poder usar async/await. */
+function gsRun(nombreFuncion, ...args) {
+  return new Promise((resolve, reject) => {
+    google.script.run
+      .withSuccessHandler(resolve)
+      .withFailureHandler((error) => reject(error))
+      [nombreFuncion](...args);
+  });
+}
+
+const MESES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+
+createApp({
+  setup() {
+    const cargando = ref(false);
+    const error = ref('');
+    const aviso = ref('');
+
+    const areas = ref([]);
+    const articulos = ref([]);
+    const sedes = ref([]);
+
+    const areaId = ref('');
+    const anio = ref(new Date().getFullYear());
+    const mes = ref(new Date().getMonth() + 1);
+
+    const cabecera = ref(null);
+    const detalle = reactive({}); // clave "codigo|dia" -> cantidad_programada
+    const articulosVisibles = ref([]); // códigos que se muestran en la tabla
+    const articuloParaAgregar = ref('');
+    const fechaVale = ref('');
+
+    const diasDelMes = computed(() => new Date(anio.value, mes.value, 0).getDate());
+
+    function claveCelda(codigo, dia) {
+      return codigo + '|' + dia;
+    }
+
+    function fechaIso(dia) {
+      const d = String(dia).padStart(2, '0');
+      const m = String(mes.value).padStart(2, '0');
+      return anio.value + '-' + m + '-' + d;
+    }
+
+    async function cargarCatalogos() {
+      [areas.value, articulos.value, sedes.value] = await Promise.all([
+        gsRun('apiListarAreasServicio'),
+        gsRun('apiListarArticulos'),
+        gsRun('apiListarSedes'),
+      ]);
+      if (areas.value.length) areaId.value = areas.value[0].area_id;
+    }
+
+    async function cargarProgramacion() {
+      if (!areaId.value) return;
+      cargando.value = true;
+      error.value = '';
+      try {
+        const resp = await gsRun('apiObtenerProgramacionMes', areaId.value, anio.value, mes.value);
+        cabecera.value = resp.cabecera;
+        Object.keys(detalle).forEach((k) => delete detalle[k]);
+        const codigos = new Set();
+        resp.detalle.forEach((d) => {
+          const dia = Number(d.fecha.split('-')[2]);
+          detalle[claveCelda(d.codigo_articulo, dia)] = d.cantidad_programada;
+          codigos.add(d.codigo_articulo);
+        });
+        articulosVisibles.value = Array.from(codigos);
+      } catch (e) {
+        error.value = String(e);
+      } finally {
+        cargando.value = false;
+      }
+    }
+
+    async function crearProgramacion() {
+      cargando.value = true;
+      try {
+        await gsRun('apiCrearProgramacionMensual', areaId.value, anio.value, mes.value);
+        await cargarProgramacion();
+      } catch (e) {
+        error.value = String(e);
+      } finally {
+        cargando.value = false;
+      }
+    }
+
+    function agregarArticuloVisible() {
+      if (articuloParaAgregar.value && articulosVisibles.value.indexOf(articuloParaAgregar.value) === -1) {
+        articulosVisibles.value.push(articuloParaAgregar.value);
+      }
+      articuloParaAgregar.value = '';
+    }
+
+    async function guardarCelda(codigo, dia) {
+      const valor = Number(detalle[claveCelda(codigo, dia)] || 0);
+      try {
+        await gsRun('apiGuardarCantidadProgramada', cabecera.value.programacion_id, codigo, fechaIso(dia), valor);
+      } catch (e) {
+        error.value = String(e);
+      }
+    }
+
+    function descripcionArticulo(codigo) {
+      const a = articulos.value.find((x) => x.codigo_articulo === codigo);
+      return a ? a.descripcion + ' (' + a.unidad_clave + ')' : codigo;
+    }
+
+    async function generarVale() {
+      if (!fechaVale.value) { error.value = 'Selecciona una fecha para el vale.'; return; }
+      cargando.value = true;
+      try {
+        const url = await gsRun('apiGenerarValePedido', areaId.value, fechaVale.value);
+        aviso.value = 'Vale generado.';
+        window.open(url, '_blank');
+      } catch (e) {
+        error.value = String(e);
+      } finally {
+        cargando.value = false;
+      }
+    }
+
+    onMounted(async () => {
+      cargando.value = true;
+      try {
+        await cargarCatalogos();
+        await cargarProgramacion();
+      } catch (e) {
+        error.value = String(e);
+      } finally {
+        cargando.value = false;
+      }
+    });
+
+    return {
+      cargando, error, aviso, areas, articulos, sedes, areaId, anio, mes, MESES,
+      cabecera, detalle, diasDelMes, articulosVisibles, articuloParaAgregar, fechaVale,
+      cargarProgramacion, crearProgramacion, agregarArticuloVisible, guardarCelda,
+      descripcionArticulo, generarVale, claveCelda,
+    };
+  },
+  template: `
+    <div class="max-w-7xl mx-auto p-4">
+      <h1 class="text-xl font-bold mb-1">Dietología — Programación mensual y almacén</h1>
+      <p class="text-sm text-slate-500 mb-4">Herramienta interna — Hospital Civil de Guadalajara</p>
+
+      <div v-if="error" class="bg-red-100 text-red-800 border border-red-300 rounded p-2 mb-3 text-sm">{{ error }}</div>
+      <div v-if="aviso" class="bg-emerald-100 text-emerald-800 border border-emerald-300 rounded p-2 mb-3 text-sm">{{ aviso }}</div>
+
+      <div class="flex flex-wrap gap-3 items-end bg-white border rounded p-3 mb-4">
+        <div>
+          <label class="block text-xs text-slate-500">Área</label>
+          <select v-model="areaId" @change="cargarProgramacion" class="border rounded px-2 py-1">
+            <option v-for="a in areas" :key="a.area_id" :value="a.area_id">{{ a.nombre }}</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs text-slate-500">Año</label>
+          <input type="number" v-model.number="anio" @change="cargarProgramacion" class="border rounded px-2 py-1 w-24">
+        </div>
+        <div>
+          <label class="block text-xs text-slate-500">Mes</label>
+          <select v-model.number="mes" @change="cargarProgramacion" class="border rounded px-2 py-1">
+            <option v-for="(nombre, i) in MESES" :key="i" :value="i + 1">{{ nombre }}</option>
+          </select>
+        </div>
+        <div v-if="cargando" class="text-sm text-slate-500">Cargando…</div>
+      </div>
+
+      <div v-if="!cabecera && !cargando" class="bg-white border rounded p-4 mb-4">
+        <p class="text-sm mb-2">No existe programación para esta área/mes todavía.</p>
+        <button @click="crearProgramacion" class="bg-slate-800 text-white text-sm px-3 py-1.5 rounded">Crear programación</button>
+      </div>
+
+      <div v-if="cabecera" class="bg-white border rounded p-3 mb-4">
+        <div class="flex flex-wrap gap-3 items-end mb-3">
+          <div>
+            <label class="block text-xs text-slate-500">Agregar artículo a la tabla</label>
+            <select v-model="articuloParaAgregar" class="border rounded px-2 py-1 w-96">
+              <option value="" disabled>Selecciona un artículo…</option>
+              <option v-for="a in articulos" :key="a.codigo_articulo" :value="a.codigo_articulo">{{ a.codigo_articulo }} — {{ a.descripcion }}</option>
+            </select>
+          </div>
+          <button @click="agregarArticuloVisible" class="bg-slate-200 text-sm px-3 py-1.5 rounded">Agregar</button>
+        </div>
+
+        <div class="overflow-x-auto max-h-[60vh] border rounded">
+          <table class="text-xs sticky-first-col">
+            <thead class="sticky top-0 bg-slate-100">
+              <tr>
+                <th class="px-2 py-1 text-left border-b border-r">Artículo</th>
+                <th v-for="d in diasDelMes" :key="d" class="px-1 py-1 border-b text-center">{{ d }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="codigo in articulosVisibles" :key="codigo" class="odd:bg-white even:bg-slate-50">
+                <td class="px-2 py-1 border-r whitespace-nowrap">{{ descripcionArticulo(codigo) }}</td>
+                <td v-for="d in diasDelMes" :key="d" class="p-0.5">
+                  <input type="number" min="0" class="celda-cantidad border rounded px-1 py-0.5 text-right"
+                         v-model.number="detalle[claveCelda(codigo, d)]"
+                         @change="guardarCelda(codigo, d)">
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div v-if="cabecera" class="bg-white border rounded p-3">
+        <h2 class="font-semibold text-sm mb-2">Generar Vale de Pedido al Almacén</h2>
+        <div class="flex gap-2 items-end">
+          <div>
+            <label class="block text-xs text-slate-500">Fecha</label>
+            <input type="date" v-model="fechaVale" class="border rounded px-2 py-1">
+          </div>
+          <button @click="generarVale" class="bg-slate-800 text-white text-sm px-3 py-1.5 rounded">Generar PDF</button>
+        </div>
+      </div>
+    </div>
+  `,
+}).mount('#app');
+</script>
