@@ -18,6 +18,10 @@ createApp({
     const cargando = ref(false);
     const error = ref('');
     const aviso = ref('');
+    const pestana = ref('programacion');
+
+    const sesion = ref(null); // { usuario_id, correo, nombre, rol, servicios_asignados: [{servicio_id, nombre, permiso}] }
+    const esAdmin = computed(() => sesion.value && sesion.value.rol === 'ADMINISTRADOR');
 
     const areas = ref([]);
     const articulos = ref([]);
@@ -29,29 +33,39 @@ createApp({
 
     const cabecera = ref(null);
     const detalle = reactive({}); // clave "codigo|dia" -> cantidad_programada
-    const articulosVisibles = ref([]); // códigos que se muestran en la tabla
+    const articulosVisibles = ref([]);
     const articuloParaAgregar = ref('');
     const fechaVale = ref('');
 
     const diasDelMes = computed(() => new Date(anio.value, mes.value, 0).getDate());
 
-    function claveCelda(codigo, dia) {
-      return codigo + '|' + dia;
+    /** Permiso del usuario actual sobre el área seleccionada (null si no aplica, p.ej. viendo como admin). */
+    const permisoAreaActual = computed(() => {
+      if (!sesion.value) return null;
+      if (esAdmin.value) return 'APROBACION'; // el admin siempre puede todo
+      const asignacion = sesion.value.servicios_asignados.find((s) => String(s.servicio_id) === String(areaId.value));
+      return asignacion ? asignacion.permiso : null;
+    });
+    const puedeEscribir = computed(() => permisoAreaActual.value === 'ESCRITURA' || permisoAreaActual.value === 'APROBACION');
+    const puedeEnviar = computed(() => permisoAreaActual.value === 'APROBACION');
+    const soloLectura = computed(() => !cabecera.value || cabecera.value.estatus !== 'BORRADOR' || !puedeEscribir.value);
+
+    function claveCelda(codigo, dia) { return codigo + '|' + dia; }
+    function fechaIso(dia) {
+      return anio.value + '-' + String(mes.value).padStart(2, '0') + '-' + String(dia).padStart(2, '0');
     }
 
-    function fechaIso(dia) {
-      const d = String(dia).padStart(2, '0');
-      const m = String(mes.value).padStart(2, '0');
-      return anio.value + '-' + m + '-' + d;
+    async function cargarSesion() {
+      sesion.value = await gsRun('apiObtenerSesion');
     }
 
     async function cargarCatalogos() {
       [areas.value, articulos.value, sedes.value] = await Promise.all([
-        gsRun('apiListarAreasServicio'),
+        gsRun('apiListarAreasServicio'), // ya viene acotado por servicio en el servidor
         gsRun('apiListarArticulos'),
         gsRun('apiListarSedes'),
       ]);
-      if (areas.value.length) areaId.value = areas.value[0].area_id;
+      if (areas.value.length && !areaId.value) areaId.value = areas.value[0].area_id;
     }
 
     async function cargarProgramacion() {
@@ -109,6 +123,33 @@ createApp({
       return a ? a.descripcion + ' (' + a.unidad_clave + ')' : codigo;
     }
 
+    async function enviarInformacion() {
+      if (!confirm('¿Enviar la información de este mes? Después de enviar, esta pestaña queda en solo lectura hasta que un administrador la reabra.')) return;
+      cargando.value = true;
+      try {
+        await gsRun('apiEnviarCarga', cabecera.value.programacion_id);
+        aviso.value = 'Carga enviada y consolidada.';
+        await cargarProgramacion();
+      } catch (e) {
+        error.value = String(e);
+      } finally {
+        cargando.value = false;
+      }
+    }
+
+    async function reabrirCargaActual() {
+      cargando.value = true;
+      try {
+        await gsRun('apiReabrirCarga', cabecera.value.programacion_id);
+        aviso.value = 'Carga reabierta.';
+        await cargarProgramacion();
+      } catch (e) {
+        error.value = String(e);
+      } finally {
+        cargando.value = false;
+      }
+    }
+
     async function generarVale() {
       if (!fechaVale.value) { error.value = 'Selecciona una fecha para el vale.'; return; }
       cargando.value = true;
@@ -123,9 +164,66 @@ createApp({
       }
     }
 
+    // ---- Administración ----
+    const usuarios = ref([]);
+    const consolidadoGeneral = ref([]);
+    const nuevoUsuario = reactive({ correo: '', nombre: '', rol: 'CAPTURISTA' });
+    const nuevaAsignacion = reactive({ usuario_id: '', area_id: '', permiso: 'ESCRITURA' });
+
+    async function cargarAdmin() {
+      if (!esAdmin.value) return;
+      cargando.value = true;
+      try {
+        [usuarios.value, consolidadoGeneral.value] = await Promise.all([
+          gsRun('apiListarUsuarios'),
+          gsRun('apiListarConsolidadoGeneral'),
+        ]);
+      } catch (e) {
+        error.value = String(e);
+      } finally {
+        cargando.value = false;
+      }
+    }
+
+    async function crearUsuario() {
+      try {
+        await gsRun('apiGuardarUsuario', Object.assign({}, nuevoUsuario));
+        nuevoUsuario.correo = ''; nuevoUsuario.nombre = ''; nuevoUsuario.rol = 'CAPTURISTA';
+        aviso.value = 'Usuario creado.';
+        await cargarAdmin();
+      } catch (e) {
+        error.value = String(e);
+      }
+    }
+
+    async function asignarServicio() {
+      try {
+        await gsRun('apiAsignarServicio', nuevaAsignacion.usuario_id, nuevaAsignacion.area_id, nuevaAsignacion.permiso);
+        aviso.value = 'Servicio asignado.';
+        await cargarAdmin();
+      } catch (e) {
+        error.value = String(e);
+      }
+    }
+
+    async function revocarServicio(usuarioId, areaId2) {
+      try {
+        await gsRun('apiRevocarServicio', usuarioId, areaId2);
+        await cargarAdmin();
+      } catch (e) {
+        error.value = String(e);
+      }
+    }
+
+    async function cambiarPestana(nombre) {
+      pestana.value = nombre;
+      if (nombre === 'admin') await cargarAdmin();
+    }
+
     onMounted(async () => {
       cargando.value = true;
       try {
+        await cargarSesion();
         await cargarCatalogos();
         await cargarProgramacion();
       } catch (e) {
@@ -136,87 +234,186 @@ createApp({
     });
 
     return {
-      cargando, error, aviso, areas, articulos, sedes, areaId, anio, mes, MESES,
+      cargando, error, aviso, pestana, sesion, esAdmin,
+      areas, articulos, sedes, areaId, anio, mes, MESES,
       cabecera, detalle, diasDelMes, articulosVisibles, articuloParaAgregar, fechaVale,
+      soloLectura, puedeEnviar,
       cargarProgramacion, crearProgramacion, agregarArticuloVisible, guardarCelda,
-      descripcionArticulo, generarVale, claveCelda,
+      descripcionArticulo, generarVale, claveCelda, enviarInformacion, reabrirCargaActual,
+      usuarios, consolidadoGeneral, nuevoUsuario, nuevaAsignacion,
+      crearUsuario, asignarServicio, revocarServicio, cambiarPestana,
     };
   },
   template: `
     <div class="max-w-7xl mx-auto p-4">
-      <h1 class="text-xl font-bold mb-1">Dietología — Programación mensual y almacén</h1>
+      <div class="flex items-center justify-between mb-1">
+        <h1 class="text-xl font-bold">Dietología — Programación mensual y almacén</h1>
+        <div v-if="sesion" class="text-xs text-slate-500 text-right">
+          {{ sesion.nombre || sesion.correo }} · <span class="font-semibold">{{ sesion.rol }}</span>
+        </div>
+      </div>
       <p class="text-sm text-slate-500 mb-4">Herramienta interna — Hospital Civil de Guadalajara</p>
 
       <div v-if="error" class="bg-red-100 text-red-800 border border-red-300 rounded p-2 mb-3 text-sm">{{ error }}</div>
       <div v-if="aviso" class="bg-emerald-100 text-emerald-800 border border-emerald-300 rounded p-2 mb-3 text-sm">{{ aviso }}</div>
 
-      <div class="flex flex-wrap gap-3 items-end bg-white border rounded p-3 mb-4">
-        <div>
-          <label class="block text-xs text-slate-500">Área</label>
-          <select v-model="areaId" @change="cargarProgramacion" class="border rounded px-2 py-1">
-            <option v-for="a in areas" :key="a.area_id" :value="a.area_id">{{ a.nombre }}</option>
-          </select>
-        </div>
-        <div>
-          <label class="block text-xs text-slate-500">Año</label>
-          <input type="number" v-model.number="anio" @change="cargarProgramacion" class="border rounded px-2 py-1 w-24">
-        </div>
-        <div>
-          <label class="block text-xs text-slate-500">Mes</label>
-          <select v-model.number="mes" @change="cargarProgramacion" class="border rounded px-2 py-1">
-            <option v-for="(nombre, i) in MESES" :key="i" :value="i + 1">{{ nombre }}</option>
-          </select>
-        </div>
-        <div v-if="cargando" class="text-sm text-slate-500">Cargando…</div>
+      <div class="flex gap-2 mb-4 border-b">
+        <button @click="cambiarPestana('programacion')"
+                :class="['px-3 py-1.5 text-sm border-b-2', pestana==='programacion' ? 'border-slate-800 font-semibold' : 'border-transparent text-slate-500']">
+          Programación
+        </button>
+        <button v-if="esAdmin" @click="cambiarPestana('admin')"
+                :class="['px-3 py-1.5 text-sm border-b-2', pestana==='admin' ? 'border-slate-800 font-semibold' : 'border-transparent text-slate-500']">
+          Administración y Consolidado General
+        </button>
       </div>
 
-      <div v-if="!cabecera && !cargando" class="bg-white border rounded p-4 mb-4">
-        <p class="text-sm mb-2">No existe programación para esta área/mes todavía.</p>
-        <button @click="crearProgramacion" class="bg-slate-800 text-white text-sm px-3 py-1.5 rounded">Crear programación</button>
-      </div>
-
-      <div v-if="cabecera" class="bg-white border rounded p-3 mb-4">
-        <div class="flex flex-wrap gap-3 items-end mb-3">
+      <!-- ===== Pestaña: Programación ===== -->
+      <div v-if="pestana==='programacion'">
+        <div class="flex flex-wrap gap-3 items-end bg-white border rounded p-3 mb-4">
           <div>
-            <label class="block text-xs text-slate-500">Agregar artículo a la tabla</label>
-            <select v-model="articuloParaAgregar" class="border rounded px-2 py-1 w-96">
-              <option value="" disabled>Selecciona un artículo…</option>
-              <option v-for="a in articulos" :key="a.codigo_articulo" :value="a.codigo_articulo">{{ a.codigo_articulo }} — {{ a.descripcion }}</option>
+            <label class="block text-xs text-slate-500">Servicio</label>
+            <select v-model="areaId" @change="cargarProgramacion" class="border rounded px-2 py-1">
+              <option v-for="a in areas" :key="a.area_id" :value="a.area_id">{{ a.nombre }}</option>
             </select>
           </div>
-          <button @click="agregarArticuloVisible" class="bg-slate-200 text-sm px-3 py-1.5 rounded">Agregar</button>
+          <div>
+            <label class="block text-xs text-slate-500">Año</label>
+            <input type="number" v-model.number="anio" @change="cargarProgramacion" class="border rounded px-2 py-1 w-24">
+          </div>
+          <div>
+            <label class="block text-xs text-slate-500">Mes</label>
+            <select v-model.number="mes" @change="cargarProgramacion" class="border rounded px-2 py-1">
+              <option v-for="(nombre, i) in MESES" :key="i" :value="i + 1">{{ nombre }}</option>
+            </select>
+          </div>
+          <div v-if="cabecera" class="text-xs px-2 py-1 rounded"
+               :class="cabecera.estatus==='BORRADOR' ? 'bg-amber-100 text-amber-800' : 'bg-slate-200 text-slate-700'">
+            Estatus: {{ cabecera.estatus }}
+            <span v-if="cabecera.fecha_envio"> · enviado {{ cabecera.fecha_envio.slice(0,10) }}</span>
+          </div>
+          <div v-if="cargando" class="text-sm text-slate-500">Cargando…</div>
         </div>
 
-        <div class="overflow-x-auto max-h-[60vh] border rounded">
-          <table class="text-xs sticky-first-col">
-            <thead class="sticky top-0 bg-slate-100">
-              <tr>
-                <th class="px-2 py-1 text-left border-b border-r">Artículo</th>
-                <th v-for="d in diasDelMes" :key="d" class="px-1 py-1 border-b text-center">{{ d }}</th>
-              </tr>
-            </thead>
+        <div v-if="!cabecera && !cargando" class="bg-white border rounded p-4 mb-4">
+          <p class="text-sm mb-2">No existe programación para este servicio/mes todavía.</p>
+          <button @click="crearProgramacion" class="bg-slate-800 text-white text-sm px-3 py-1.5 rounded">Crear programación</button>
+        </div>
+
+        <div v-if="cabecera" class="bg-white border rounded p-3 mb-4">
+          <div class="flex flex-wrap gap-3 items-end mb-3">
+            <div>
+              <label class="block text-xs text-slate-500">Agregar artículo a la tabla</label>
+              <select v-model="articuloParaAgregar" :disabled="soloLectura" class="border rounded px-2 py-1 w-96 disabled:bg-slate-100">
+                <option value="" disabled>Selecciona un artículo…</option>
+                <option v-for="a in articulos" :key="a.codigo_articulo" :value="a.codigo_articulo">{{ a.codigo_articulo }} — {{ a.descripcion }}</option>
+              </select>
+            </div>
+            <button @click="agregarArticuloVisible" :disabled="soloLectura" class="bg-slate-200 text-sm px-3 py-1.5 rounded disabled:opacity-50">Agregar</button>
+          </div>
+
+          <div class="overflow-x-auto max-h-[60vh] border rounded">
+            <table class="text-xs sticky-first-col">
+              <thead class="sticky top-0 bg-slate-100">
+                <tr>
+                  <th class="px-2 py-1 text-left border-b border-r">Artículo</th>
+                  <th v-for="d in diasDelMes" :key="d" class="px-1 py-1 border-b text-center">{{ d }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="codigo in articulosVisibles" :key="codigo" class="odd:bg-white even:bg-slate-50">
+                  <td class="px-2 py-1 border-r whitespace-nowrap">{{ descripcionArticulo(codigo) }}</td>
+                  <td v-for="d in diasDelMes" :key="d" class="p-0.5">
+                    <input type="number" min="0" :disabled="soloLectura"
+                           class="celda-cantidad border rounded px-1 py-0.5 text-right disabled:bg-slate-100 disabled:text-slate-400"
+                           v-model.number="detalle[claveCelda(codigo, d)]"
+                           @change="guardarCelda(codigo, d)">
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="flex gap-2 mt-3">
+            <button v-if="puedeEnviar && cabecera.estatus==='BORRADOR'" @click="enviarInformacion"
+                    class="bg-emerald-700 text-white text-sm px-3 py-1.5 rounded">Enviar información</button>
+            <button v-if="esAdmin && cabecera.estatus==='ENVIADO'" @click="reabrirCargaActual"
+                    class="bg-amber-600 text-white text-sm px-3 py-1.5 rounded">Reabrir carga</button>
+          </div>
+        </div>
+
+        <div v-if="cabecera" class="bg-white border rounded p-3">
+          <h2 class="font-semibold text-sm mb-2">Generar Vale de Pedido al Almacén</h2>
+          <div class="flex gap-2 items-end">
+            <div>
+              <label class="block text-xs text-slate-500">Fecha</label>
+              <input type="date" v-model="fechaVale" class="border rounded px-2 py-1">
+            </div>
+            <button @click="generarVale" class="bg-slate-800 text-white text-sm px-3 py-1.5 rounded">Generar PDF</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== Pestaña: Administración (sólo ADMINISTRADOR) ===== -->
+      <div v-if="pestana==='admin' && esAdmin">
+        <div class="bg-white border rounded p-3 mb-4">
+          <h2 class="font-semibold text-sm mb-2">Usuarios</h2>
+          <table class="text-xs w-full mb-3">
+            <thead><tr class="text-left border-b"><th class="py-1">Correo</th><th>Nombre</th><th>Rol</th><th>Servicios asignados</th></tr></thead>
             <tbody>
-              <tr v-for="codigo in articulosVisibles" :key="codigo" class="odd:bg-white even:bg-slate-50">
-                <td class="px-2 py-1 border-r whitespace-nowrap">{{ descripcionArticulo(codigo) }}</td>
-                <td v-for="d in diasDelMes" :key="d" class="p-0.5">
-                  <input type="number" min="0" class="celda-cantidad border rounded px-1 py-0.5 text-right"
-                         v-model.number="detalle[claveCelda(codigo, d)]"
-                         @change="guardarCelda(codigo, d)">
+              <tr v-for="u in usuarios" :key="u.usuario_id" class="border-b">
+                <td class="py-1">{{ u.correo }}</td><td>{{ u.nombre }}</td><td>{{ u.rol }}</td>
+                <td>
+                  <span v-for="s in u.servicios_asignados" :key="s.area_id" class="inline-flex items-center gap-1 bg-slate-100 rounded px-1.5 py-0.5 mr-1 mb-1">
+                    {{ s.nombre }} ({{ s.permiso }})
+                    <button @click="revocarServicio(u.usuario_id, s.area_id)" class="text-red-600">×</button>
+                  </span>
                 </td>
               </tr>
             </tbody>
           </table>
-        </div>
-      </div>
 
-      <div v-if="cabecera" class="bg-white border rounded p-3">
-        <h2 class="font-semibold text-sm mb-2">Generar Vale de Pedido al Almacén</h2>
-        <div class="flex gap-2 items-end">
-          <div>
-            <label class="block text-xs text-slate-500">Fecha</label>
-            <input type="date" v-model="fechaVale" class="border rounded px-2 py-1">
+          <div class="flex flex-wrap gap-2 items-end border-t pt-3">
+            <input v-model="nuevoUsuario.correo" placeholder="correo@hospital.org" class="border rounded px-2 py-1 text-sm">
+            <input v-model="nuevoUsuario.nombre" placeholder="Nombre" class="border rounded px-2 py-1 text-sm">
+            <select v-model="nuevoUsuario.rol" class="border rounded px-2 py-1 text-sm">
+              <option>CAPTURISTA</option><option>SUPERVISOR</option><option>ADMINISTRADOR</option>
+            </select>
+            <button @click="crearUsuario" class="bg-slate-800 text-white text-sm px-3 py-1.5 rounded">Crear usuario</button>
           </div>
-          <button @click="generarVale" class="bg-slate-800 text-white text-sm px-3 py-1.5 rounded">Generar PDF</button>
+
+          <div class="flex flex-wrap gap-2 items-end border-t pt-3 mt-3">
+            <select v-model="nuevaAsignacion.usuario_id" class="border rounded px-2 py-1 text-sm">
+              <option value="" disabled>Usuario…</option>
+              <option v-for="u in usuarios" :key="u.usuario_id" :value="u.usuario_id">{{ u.correo }}</option>
+            </select>
+            <select v-model="nuevaAsignacion.area_id" class="border rounded px-2 py-1 text-sm">
+              <option value="" disabled>Servicio…</option>
+              <option v-for="a in areas" :key="a.area_id" :value="a.area_id">{{ a.nombre }}</option>
+            </select>
+            <select v-model="nuevaAsignacion.permiso" class="border rounded px-2 py-1 text-sm">
+              <option>LECTURA</option><option>ESCRITURA</option><option>APROBACION</option>
+            </select>
+            <button @click="asignarServicio" class="bg-slate-800 text-white text-sm px-3 py-1.5 rounded">Asignar servicio</button>
+          </div>
+        </div>
+
+        <div class="bg-white border rounded p-3">
+          <h2 class="font-semibold text-sm mb-2">Consolidado General ({{ consolidadoGeneral.length }} filas)</h2>
+          <div class="overflow-x-auto max-h-[50vh]">
+            <table class="text-xs w-full">
+              <thead class="sticky top-0 bg-slate-100"><tr class="text-left">
+                <th class="px-2 py-1">Fecha</th><th>Servicio</th><th>Artículo</th><th>Cantidad</th><th>Enviado por</th>
+              </tr></thead>
+              <tbody>
+                <tr v-for="c in consolidadoGeneral" :key="c.consolidado_id" class="odd:bg-white even:bg-slate-50">
+                  <td class="px-2 py-1">{{ c.fecha }}</td><td>{{ c.nombre_area }}</td>
+                  <td>{{ c.codigo_articulo }} — {{ c.descripcion_articulo }}</td>
+                  <td>{{ c.cantidad_programada }}</td><td>{{ c.correo_envio }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>

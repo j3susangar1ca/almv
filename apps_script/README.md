@@ -26,10 +26,13 @@ clasp login                       # abre el navegador, autoriza tu cuenta de Goo
    ```
 4. Abre el proyecto (`clasp open`) y, desde el editor de Apps Script, ejecuta **una vez**, en este orden:
    - `configurarProyectoInicial` — guarda el ID del Sheet activo y valores por defecto (correos de notificación, días de alerta de caducidad). Ajusta después esos valores en **Configuración del proyecto → Propiedades del script** si hace falta.
-   - `crearEstructuraCompleta` — crea las 21 pestañas con encabezados, formato de fecha y listas desplegables.
+   - `crearEstructuraCompleta` — crea las 24 pestañas con encabezados, formato de fecha y listas desplegables (21 de datos + `usuarios`/`usuario_servicios`/`consolidado_general` del módulo de RBAC).
    - `crearVistasReporte` — crea las 3 pestañas `vista_*` para Looker Studio (quedan vacías hasta que haya datos).
+   - `sembrarPrimerAdministrador` — te da de alta a ti mismo (el correo de tu sesión) como `ADMINISTRADOR`; es el único paso de arranque en frío, porque sin un administrador nadie podría dar de alta al primero desde la Web App.
 
    La primera vez que ejecutes cualquier función te pedirá autorizar los permisos (Sheets, Drive, Docs, Gmail) — es normal, es el propio dueño del Sheet autorizando su copia del script.
+
+5. Desde la Web App ya publicada (sección 4), entra con tu cuenta de Google (verás la pestaña **Administración y Consolidado General**) y da de alta ahí al resto de los ~10 usuarios, asignándoles sus servicios y nivel de permiso (`LECTURA`/`ESCRITURA`/`APROBACION`). Ver `../ADAPTACION_STACK_GOOGLE.md`, sección 8, para el detalle de cómo funciona el control de acceso.
 
 ## 3. Cargar los datos ya saneados
 
@@ -67,8 +70,10 @@ En el editor de Apps Script: **Activadores (⏰) → Añadir activador**, uno po
 
 ## 7. Qué se validó y qué no (léelo antes de confiar el proyecto)
 
-- **Sí se validó:** toda la lógica de negocio de `01_Utilidades.gs`, `10_Catalogos.gs`, `20_Contratos.gs`, `30_Programacion.gs`, `40_Inventario.gs` y `50_Consolidacion.gs` — se corrió con un arnés de pruebas en Node.js con mocks de `SpreadsheetApp`/`PropertiesService`/`LockService`, reproduciendo el mismo escenario extremo a extremo que se probó contra PostgreSQL real (10 kg Pacientes + 10 kg Comedor → OC de 20 kg → entrada → 2 salidas de 10 kg, incluyendo los 3 casos de rechazo: contrato duplicado activo, sobre-consolidación de OC, sobre-asignación de entrada, y sobregiro de techo contractual). Los 13 pasos del escenario pasaron.
-- **No se pudo ejecutar contra Google real** (Sheets/Drive/Gmail/Docs en vivo) porque este entorno no tiene acceso a las APIs de Google — sólo se verificó sintaxis válida de JavaScript/V8 en `02_SetupSheets.gs`, `03_ImportarCSV.gs`, `60_Notificaciones.gs`, `70_GeneradorDocumentos.gs`, `80_WebApp.gs` y `90_Vistas.gs`. Antes de operar con datos reales, corre el flujo completo (pasos 2–6 de este README) sobre un Sheet de prueba.
+- **Sí se validó:** toda la lógica de negocio de `01_Utilidades.gs`, `05_Autenticacion.gs`, `10_Catalogos.gs`, `11_Usuarios.gs`, `20_Contratos.gs`, `30_Programacion.gs`, `31_CicloVida.gs`, `40_Inventario.gs` y `50_Consolidacion.gs` — se corrió con un arnés de pruebas en Node.js con mocks de `SpreadsheetApp`/`PropertiesService`/`LockService`/`Session`, reproduciendo dos escenarios extremo a extremo:
+  1. El de inventario/OC contra PostgreSQL real (10 kg Pacientes + 10 kg Comedor → OC de 20 kg → entrada → 2 salidas de 10 kg, con sus 4 rechazos).
+  2. El de control de acceso y ciclo de vida (whitelist, alta del primer administrador, alta de 2 capturistas con servicios distintos, aislamiento de información entre ellos, upsert de celdas, envío que bloquea edición, consolidación automática en `consolidado_general`, reapertura exclusiva de ADMINISTRADOR que purga y permite recalcular). 22 pasos, todos pasaron, incluyendo cada criterio de aceptación de la sección 7 del SRS de RBAC.
+- **No se pudo ejecutar contra Google real** (Sheets/Drive/Gmail/Docs en vivo) porque este entorno no tiene acceso a las APIs de Google — sólo se verificó sintaxis válida de JavaScript/V8 en `02_SetupSheets.gs`, `03_ImportarCSV.gs`, `60_Notificaciones.gs`, `70_GeneradorDocumentos.gs`, `80_WebApp.gs`, `90_Vistas.gs` y el bloque `<script>` de `JavaScript.html`. Antes de operar con datos reales, corre el flujo completo (pasos 2–6 de este README) sobre un Sheet de prueba.
 
 ## 8. Estructura de archivos
 

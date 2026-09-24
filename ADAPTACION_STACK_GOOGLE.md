@@ -128,6 +128,40 @@ Looker Studio no hace `JOIN` cómodo entre pestañas separadas de un mismo Sheet
 
 Looker Studio se conecta a esas 3 vistas (conector nativo de Google Sheets), no a las tablas transaccionales.
 
-## 8. Puesta en marcha
+## 8. Control de acceso: whitelist, RBAC por servicio y ciclo de vida de captura
+
+Añadido sobre el diseño original para cumplir el documento de requerimientos de Control de Acceso (RBAC), Carga Segmentada por Servicio y Consolidación Centralizada.
+
+### 9.1 Autenticación sin contraseña, sin riesgo de suplantación
+
+El documento de requerimientos advierte explícitamente que pedir el correo por un campo de texto permite suplantación, y ofrece 3 estrategias. Se implementó la **Opción 1 (recomendada)** porque además es la más natural en este stack: `Session.getActiveUser().getEmail()` — la identidad nunca la escribe el usuario, la entrega la sesión de Google ya autenticada con la que abrió la Web App. Esto exige dos ajustes en `appsscript.json` sin los cuales `getActiveUser()` devuelve vacío:
+- `webapp.executeAs: "USER_ACCESSING"` (cada petición corre con los permisos y la identidad de quien la hace, no del dueño del script).
+- `webapp.access: "DOMAIN"` (o una lista de correos específica) — con acceso "Cualquiera", Google no expone el correo por privacidad.
+
+`doGet()` valida la sesión contra la whitelist (`usuarios`, `activo=true`) **antes** de servir una sola línea de la interfaz; si el correo no está registrado, la respuesta es la página de "Acceso no autorizado" (el equivalente funcional al `403 Forbidden` del documento — Apps Script Web Apps no exponen códigos de estado HTTP a nivel de aplicación, así que el 403 se modela como excepción + página de rechazo).
+
+### 9.2 Modelo de datos (RBAC & Scoping)
+
+El documento pide 3 entidades (`usuarios`, `servicios`, `usuario_servicios`). `servicios` **no se duplicó**: es, conceptualmente, la misma entidad que `area_servicio` ya existente en el modelo de 21 tablas (GENERAL, PACIENTES, COMEDOR, DIETOLOGIA, …) — tener dos catálogos para el mismo concepto real habría reintroducido exactamente el tipo de redundancia que el informe original (`INFORME_DISENO_BD_DIETOLOGIA.md`) identificó y eliminó. `usuario_servicios` referencia `area_servicio.area_id` directamente.
+
+| Tabla | Corresponde a | Notas |
+|---|---|---|
+| `usuarios` | sección 3.1 del SRS | `rol` con lista desplegable `CAPTURISTA`/`SUPERVISOR`/`ADMINISTRADOR`. |
+| `usuario_servicios` | sección 3.3 del SRS | M:N real vía `asignacion_id`; `permiso` con jerarquía `LECTURA < ESCRITURA < APROBACION` (`NIVEL_PERMISO` en `00_Config.gs`). |
+| `consolidado_general` | sección 6.1 del SRS | Ver 9.4. |
+
+### 9.3 Gatekeeper de servidor, no sólo de interfaz
+
+El documento es explícito: "la restricción no debe ser solo visual". El gatekeeper (`requiereAcceso_(areaId, permisoMinimo)` / `requiereRol_(roles)` en `05_Autenticacion.gs`) se llama **dentro de las funciones de negocio** (`guardarProgramacionMensual`, `guardarProgramacionDetalle`, `enviarCarga`, `reabrirCarga`, `consolidarDemandaEnOC`), no sólo en los endpoints de `80_WebApp.gs` — así cualquier futuro punto de entrada que llame a esas funciones hereda la protección automáticamente, en vez de depender de que cada nuevo endpoint recuerde agregarla. El frontend, además, sólo pide (`apiListarAreasServicio`) y sólo pinta los servicios que el gatekeeper ya sabe que le corresponden al usuario — el aislamiento visual es una consecuencia del aislamiento real, no una capa aparte que pueda desincronizarse.
+
+### 9.4 Ciclo de vida BORRADOR → ENVIADO y consolidación (Enfoque A)
+
+Se implementó el **Enfoque A** de la sección 6.2 (tiempo real/transaccional), no el B (vista `UNION ALL`), porque en Sheets no hay un motor de consultas que mantenga una vista unida en vivo sin recalcularla por completo cada vez — el Enfoque A además es el que da trazabilidad exacta (`usuario_envio_id`, `fecha_envio`) sin ambigüedad. `programacion_mensual.estatus` sólo tiene dos valores (`BORRADOR`/`ENVIADO`): como la consolidación ocurre en el mismo paso atómico que el envío, no existe un estado `CONSOLIDADO` intermedio que pueda desincronizarse del general — `consolidado_general` es la fuente de verdad de "qué quedó consolidado".
+
+`enviarCarga(programacionId)` (permiso `APROBACION`) escribe en `consolidado_general` dentro del mismo `LockService` que cambia el estatus. `guardarProgramacionDetalle` rechaza cualquier escritura si `estatus != 'BORRADOR'`. `reabrirCarga(programacionId)` (exclusivo `ADMINISTRADOR`) regresa el estatus a `BORRADOR` y **purga** las filas de esa programación en `consolidado_general` — es el "recálculo automático" que pide el documento: la siguiente vez que se envíe, se vuelven a escribir.
+
+El motor de consolidación de demanda en Órdenes de Compra (`consolidarDemandaEnOC`, ya existente desde antes de este SRS) se conectó a este nuevo ciclo de vida: ahora lee de `consolidado_general` en vez de `programacion_detalle` directamente, así que Compras **sólo puede convertir en OC demanda que los servicios ya enviaron formalmente**, nunca un borrador a medio capturar. Es además una acción exclusiva de `ADMINISTRADOR` (cruza servicios, no tiene un único "dueño").
+
+## 9. Puesta en marcha
 
 Ver `apps_script/README.md` para los pasos con `clasp` (login, `clasp create`, `clasp push`), la primera ejecución de `crearEstructuraCompleta()` (pestañas) y de `importarTodosLosCSV(idCarpetaDrive)` (datos), y cómo desplegar la Web App (`Deploy → New deployment → Web app`, ejecutar como el usuario que accede, acceso restringido al dominio o a la lista de los ~10 usuarios).
