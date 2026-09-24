@@ -31,8 +31,14 @@ function importarTodosLosCSV(idCarpetaDrive) {
   ['familia', 'grupo_alimento', 'proveedor', 'licitacion',
     'programacion_mensual', 'programacion_detalle',
     'consolidacion_pedido', 'asignacion_salida_entrada'].forEach((nombre) => {
-    const filas = leerCSVDrive_(carpeta, nombre + '.csv');
+    let filas = leerCSVDrive_(carpeta, nombre + '.csv');
     if (filas === null) { resultados.push(nombre + ': archivo no encontrado, se omite'); return; }
+    if (nombre === 'programacion_mensual') {
+      filas = filas.map((f) => {
+        if (f.estatus === 'PUBLICADA') f.estatus = 'ENVIADO';
+        return f;
+      });
+    }
     resultados.push(nombre + ': ' + escribirFilasHoja_(nombre, filas) + ' filas importadas');
   });
 

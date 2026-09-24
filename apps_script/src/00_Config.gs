@@ -173,7 +173,7 @@ const VALIDACIONES_LISTA = {
   // "CONSOLIDADO" ocurren en el mismo paso atómico, así que no se agrega un tercer
   // estatus: la fuente de verdad de qué quedó consolidado es la pestaña
   // consolidado_general, no un valor adicional de estatus.
-  programacion_mensual: { estatus: ['BORRADOR', 'ENVIADO'] },
+  programacion_mensual: { estatus: ['BORRADOR', 'ENVIADO', 'PUBLICADA'] },
   usuarios: { rol: ['CAPTURISTA', 'SUPERVISOR', 'ADMINISTRADOR'] },
   usuario_servicios: { permiso: ['LECTURA', 'ESCRITURA', 'APROBACION'] },
 };
