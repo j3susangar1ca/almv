@@ -77,6 +77,7 @@ createApp({
       error.value = '';
       try {
         const resp = await gsRun('apiObtenerProgramacionMes', areaId.value, anio.value, mes.value);
+        if (!resp) throw new Error('El servidor no devolvió datos de la programación (respuesta vacía).');
         cabecera.value = resp.cabecera;
         Object.keys(detalle).forEach((k) => delete detalle[k]);
         const codigos = new Set();
