@@ -60,9 +60,11 @@ createApp({
     async function cargarSesion() { sesion.value = await gsRun('apiObtenerSesion'); }
 
     async function cargarCatalogos() {
-      [areas.value, articulos.value] = await Promise.all([
+      const [resAreas, resArticulos] = await Promise.all([
         gsRun('apiListarAreasServicio'), gsRun('apiListarArticulos'),
       ]);
+      areas.value = resAreas || [];
+      articulos.value = resArticulos || [];
       if (areas.value.length && !areaId.value) areaId.value = areas.value[0].area_id;
     }
 
