@@ -10,7 +10,7 @@ function validarConsolidacionPedido_(datos) {
   const detalle = buscarPorClave_('programacion_detalle', 'programacion_detalle_id', datos.programacion_detalle_id);
   if (!detalle) throw new Error('consolidacion_pedido: programacion_detalle_id no existe.');
 
-  const ordenDetalle = buscarPorClave_('orden_suministro_detalle', 'orden_detalle_id', datos.orden_detalle_id);
+  const ordenDetalle = buscarPorClave_('orden_compra_detalle', 'orden_detalle_id', datos.orden_detalle_id);
   if (!ordenDetalle) throw new Error('consolidacion_pedido: orden_detalle_id no existe.');
   const contrato = buscarPorClave_('contrato_articulo', 'contrato_articulo_id', ordenDetalle.contrato_articulo_id);
 
@@ -57,8 +57,10 @@ function validarAsignacionSalidaEntrada_(datos) {
   if (TIPOS_MOVIMIENTO_ENTRADA.indexOf(entrada.tipo_movimiento) === -1) {
     throw new Error('asignacion_salida_entrada: el movimiento ' + datos.movimiento_entrada_id + ' no es una entrada (tipo=' + entrada.tipo_movimiento + ').');
   }
-  if (salida.codigo_articulo !== entrada.codigo_articulo || String(salida.almacen_id) !== String(entrada.almacen_id) || Number(salida.lote_id) !== Number(entrada.lote_id)) {
-    throw new Error('asignacion_salida_entrada: la salida y la entrada no corresponden al mismo artículo/almacén/lote.');
+  // Un solo almacén implícito, así que ya no se compara almacen_id; sin tabla de
+  // lotes aparte tampoco hay lote_id que emparejar — sólo debe ser el mismo artículo.
+  if (salida.codigo_articulo !== entrada.codigo_articulo) {
+    throw new Error('asignacion_salida_entrada: la salida y la entrada no corresponden al mismo artículo.');
   }
 
   const sumaEntradaPrevia = sumarColumna_('asignacion_salida_entrada', 'cantidad_asignada',
@@ -107,7 +109,7 @@ function guardarAsignacionSalidaEntrada(datos) {
  *
  * Devuelve { ordenDetalleId, cantidadConsolidada, renglonesConsolidados }.
  */
-function consolidarDemandaEnOC(codigoArticulo, sedeId, fechaInicio, fechaFin, ordenId) {
+function consolidarDemandaEnOC(codigoArticulo, fechaInicio, fechaFin, ordenId) {
   requiereRol_(['ADMINISTRADOR']);
 
   const contrato = leerFilas_('contrato_articulo').find(
@@ -123,19 +125,19 @@ function consolidarDemandaEnOC(codigoArticulo, sedeId, fechaInicio, fechaFin, or
   const total = renglones.reduce((acc, f) => acc + Number(f.cantidad_programada), 0);
 
   return conLock_(() => {
-    let orden = ordenId ? buscarPorClave_('orden_suministro', 'orden_id', ordenId) : null;
+    let orden = ordenId ? buscarPorClave_('orden_compra', 'orden_id', ordenId) : null;
     if (!orden) {
-      const nuevoOrdenId = siguienteId_('orden_suministro');
-      escribirFila_('orden_suministro', {
-        orden_id: nuevoOrdenId, proveedor_id: contrato.proveedor_id, sede_id: sedeId,
+      const nuevoOrdenId = siguienteId_('orden_compra');
+      escribirFila_('orden_compra', {
+        orden_id: nuevoOrdenId, proveedor_id: contrato.proveedor_id,
         fecha_emision: hoy_(), estatus: 'PENDIENTE',
       });
       orden = { orden_id: nuevoOrdenId };
     }
 
-    registrarConsumoCupo_(contrato.contrato_articulo_id, sedeId, total);
-    const ordenDetalleId = siguienteId_('orden_suministro_detalle');
-    escribirFila_('orden_suministro_detalle', {
+    registrarConsumoCupo_(contrato.contrato_articulo_id, total);
+    const ordenDetalleId = siguienteId_('orden_compra_detalle');
+    escribirFila_('orden_compra_detalle', {
       orden_detalle_id: ordenDetalleId, orden_id: orden.orden_id,
       contrato_articulo_id: contrato.contrato_articulo_id, cantidad_solicitada: total, cantidad_recibida: 0,
     });

@@ -26,7 +26,6 @@ createApp({
 
     const areas = ref([]);
     const articulos = ref([]);
-    const sedes = ref([]);
     const cupos = ref({}); // {codigo_articulo: {acumulado, maximo, pct}} — semáforo de techo (sección 4.1)
 
     const areaId = ref('');
@@ -61,16 +60,15 @@ createApp({
     async function cargarSesion() { sesion.value = await gsRun('apiObtenerSesion'); }
 
     async function cargarCatalogos() {
-      [areas.value, articulos.value, sedes.value] = await Promise.all([
-        gsRun('apiListarAreasServicio'), gsRun('apiListarArticulos'), gsRun('apiListarSedes'),
+      [areas.value, articulos.value] = await Promise.all([
+        gsRun('apiListarAreasServicio'), gsRun('apiListarArticulos'),
       ]);
       if (areas.value.length && !areaId.value) areaId.value = areas.value[0].area_id;
     }
 
     async function cargarCupos() {
-      if (!areaId.value) return;
-      try { cupos.value = await gsRun('apiObtenerCuposServicio', areaId.value); }
-      catch (e) { cupos.value = {}; } // no bloquea la vista si el servicio no tiene sede/almacén asignado aún
+      try { cupos.value = await gsRun('apiObtenerCuposArticulos'); }
+      catch (e) { cupos.value = {}; }
     }
 
     async function cargarProgramacion() {
@@ -112,12 +110,10 @@ createApp({
 
     function descripcionArticulo(codigo) {
       const a = articulos.value.find((x) => x.codigo_articulo === codigo);
-      return a ? a.descripcion + ' (' + a.unidad_clave + ')' : codigo;
+      return a ? a.descripcion + ' · ' + a.unidad_clave : codigo;
     }
 
     // ---- Guardado con cola + debounce (sección 5: Offline-First & Debounce) ----
-    // Optimista: la celda ya se ve actualizada en el momento (v-model), y en paralelo
-    // se agrupan los cambios de los últimos 400ms para mandarlos en un solo lote.
     const colaCambios = new Map(); // "codigo|dia" -> {codigo_articulo, fecha, cantidad_programada}
     let temporizadorGuardado = null;
     const estadoSync = ref('guardado'); // 'guardado' | 'sincronizando' | 'error'
@@ -226,7 +222,7 @@ createApp({
       if (articulosVisibles.value.indexOf(art.codigo_articulo) === -1) articulosVisibles.value.push(art.codigo_articulo);
       paletaAbierta.value = false;
       filaResaltada.value = art.codigo_articulo;
-      setTimeout(() => { if (filaResaltada.value === art.codigo_articulo) filaResaltada.value = ''; }, 1600);
+      setTimeout(() => { if (filaResaltada.value === art.codigo_articulo) filaResaltada.value = ''; }, 1800);
       nextTick(() => {
         const fila = document.querySelector('tr[data-fila-articulo="' + CSS.escape(art.codigo_articulo) + '"]');
         if (fila) fila.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -255,7 +251,7 @@ createApp({
       return 'techo-verde';
     }
     function sparklinePoints(codigo) {
-      const ancho = 56, alto = 14;
+      const ancho = 52, alto = 14;
       const valores = [];
       for (let d = 1; d <= diasDelMes.value; d++) valores.push(Number(detalle[claveCelda(codigo, d)]) || 0);
       const max = Math.max(1, ...valores);
@@ -366,7 +362,7 @@ createApp({
 
     return {
       cargando, error, aviso, pestana, sesion, esAdmin,
-      areas, articulos, sedes, areaId, anio, mes, MESES,
+      areas, articulos, areaId, anio, mes, MESES,
       cabecera, detalle, diasDelMes, articulosVisibles, articuloParaAgregar, fechaVale,
       soloLectura, puedeEnviar, diaSemana, esFinde,
       cargarProgramacion, crearProgramacion, agregarArticuloVisible,
@@ -380,205 +376,235 @@ createApp({
     };
   },
   template: `
-    <div class="max-w-[1600px] mx-auto p-4">
-      <div class="flex items-center justify-between mb-1">
-        <h1 class="text-xl font-bold">Dietología — Programación mensual y almacén</h1>
-        <div v-if="sesion" class="text-xs text-slate-500 text-right">
-          {{ sesion.nombre || sesion.correo }} · <span class="font-semibold">{{ sesion.rol }}</span>
-          <span class="ml-2 text-slate-400">Ctrl+K para buscar un artículo</span>
+    <div class="max-w-[1600px] mx-auto px-5 py-6">
+
+      <!-- ===== Encabezado ===== -->
+      <header class="flex items-center justify-between mb-5">
+        <div>
+          <h1 class="titulo-1">Dietología</h1>
+          <p class="subtitulo mt-0.5">Hospital Civil de Guadalajara · Fray Antonio Alcalde</p>
         </div>
+        <div v-if="sesion" class="flex items-center gap-3">
+          <div class="hidden sm:flex items-center gap-1.5 text-xs texto-terciario">
+            <svg class="icono" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="4"/><path d="M8 2v4M16 2v4M3 10h18"/></svg>
+            <span>⌘K</span>
+          </div>
+          <div class="text-right leading-tight">
+            <div class="text-sm font-medium">{{ sesion.nombre || sesion.correo }}</div>
+            <div class="subtitulo">{{ sesion.rol }}</div>
+          </div>
+        </div>
+      </header>
+
+      <div v-if="error" class="tarjeta px-4 py-3 mb-4 text-sm flex items-start gap-2" style="border-color: rgba(255,59,48,0.25); background: rgba(255,59,48,0.05); color: #b3261e;">
+        <svg class="icono flex-shrink-0 mt-0.5" viewBox="0 0 24 24" style="stroke:#ff3b30"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+        <span>{{ error }}</span>
       </div>
-      <p class="text-sm text-slate-500 mb-4">Herramienta interna — Hospital Civil de Guadalajara</p>
+      <div v-if="aviso" class="tarjeta px-4 py-3 mb-4 text-sm flex items-start gap-2" style="border-color: rgba(52,199,89,0.25); background: rgba(52,199,89,0.06); color: #1d8a3e;">
+        <svg class="icono flex-shrink-0 mt-0.5" viewBox="0 0 24 24" style="stroke:#34c759"><circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6"/></svg>
+        <span>{{ aviso }}</span>
+      </div>
 
-      <div v-if="error" class="bg-red-100 text-red-800 border border-red-300 rounded p-2 mb-3 text-sm">{{ error }}</div>
-      <div v-if="aviso" class="bg-emerald-100 text-emerald-800 border border-emerald-300 rounded p-2 mb-3 text-sm">{{ aviso }}</div>
-
-      <div class="flex gap-2 mb-4 border-b">
-        <button @click="cambiarPestana('programacion')"
-                :class="['px-3 py-1.5 text-sm border-b-2', pestana==='programacion' ? 'border-slate-800 font-semibold' : 'border-transparent text-slate-500']">
-          Programación
-        </button>
-        <button v-if="esAdmin" @click="cambiarPestana('admin')"
-                :class="['px-3 py-1.5 text-sm border-b-2', pestana==='admin' ? 'border-slate-800 font-semibold' : 'border-transparent text-slate-500']">
-          Administración y Consolidado General
-        </button>
+      <!-- ===== Navegación segmentada ===== -->
+      <div class="segmentado mb-5">
+        <button @click="cambiarPestana('programacion')" :class="{activo: pestana==='programacion'}">Programación</button>
+        <button v-if="esAdmin" @click="cambiarPestana('admin')" :class="{activo: pestana==='admin'}">Administración</button>
       </div>
 
       <!-- ===== Pestaña: Programación ===== -->
       <div v-if="pestana==='programacion'">
-        <div class="flex flex-wrap gap-3 items-end bg-white border rounded p-3 mb-4">
+        <div class="tarjeta flex flex-wrap gap-4 items-end px-4 py-3.5 mb-4">
           <div>
-            <label class="block text-xs text-slate-500">Servicio</label>
-            <select v-model="areaId" @change="cargarProgramacion" class="border rounded px-2 py-1">
+            <label class="block text-[11px] font-medium texto-terciario mb-1">Servicio</label>
+            <select v-model="areaId" @change="cargarProgramacion" class="campo">
               <option v-for="a in areas" :key="a.area_id" :value="a.area_id">{{ a.nombre }}</option>
             </select>
           </div>
           <div>
-            <label class="block text-xs text-slate-500">Año</label>
-            <input type="number" v-model.number="anio" @change="cargarProgramacion" class="border rounded px-2 py-1 w-24">
+            <label class="block text-[11px] font-medium texto-terciario mb-1">Año</label>
+            <input type="number" v-model.number="anio" @change="cargarProgramacion" class="campo w-24">
           </div>
           <div>
-            <label class="block text-xs text-slate-500">Mes</label>
-            <select v-model.number="mes" @change="cargarProgramacion" class="border rounded px-2 py-1">
+            <label class="block text-[11px] font-medium texto-terciario mb-1">Mes</label>
+            <select v-model.number="mes" @change="cargarProgramacion" class="campo">
               <option v-for="(nombre, i) in MESES" :key="i" :value="i + 1">{{ nombre }}</option>
             </select>
           </div>
-          <div v-if="cabecera" class="text-xs px-2 py-1 rounded font-medium"
-               :class="cabecera.estatus==='BORRADOR' ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'">
-            {{ cabecera.estatus==='BORRADOR' ? 'BORRADOR' : 'Carga Enviada y Bloqueada' }}
-            <span v-if="cabecera.fecha_envio" class="font-normal"> · enviado {{ cabecera.fecha_envio.slice(0,10) }}</span>
-          </div>
-          <div v-if="cargando" class="text-sm text-slate-500">Cargando…</div>
+          <span v-if="cabecera" class="insignia" :class="cabecera.estatus==='BORRADOR' ? 'insignia-ambar' : 'insignia-verde'">
+            <span class="punto-sync" :style="{background: cabecera.estatus==='BORRADOR' ? 'var(--color-advertencia)' : 'var(--color-exito)'}"></span>
+            {{ cabecera.estatus==='BORRADOR' ? 'Borrador' : 'Enviada y bloqueada' }}
+          </span>
+          <span v-if="cargando" class="text-xs texto-terciario">Cargando…</span>
 
-          <!-- Indicador de sincronización — sección 5 -->
-          <div v-if="cabecera && !soloLectura" class="flex items-center gap-1.5 text-xs text-slate-500 ml-auto">
-            <span class="punto-sync" :class="{'bg-emerald-500': estadoSync==='guardado', 'bg-amber-500': estadoSync==='sincronizando', 'bg-red-500': estadoSync==='error'}"></span>
+          <div v-if="cabecera && !soloLectura" class="flex items-center gap-1.5 text-xs texto-terciario ml-auto">
+            <span class="punto-sync" :class="{'bg-emerald-500': estadoSync==='guardado'}"
+                  :style="{background: estadoSync==='guardado' ? 'var(--color-exito)' : estadoSync==='sincronizando' ? 'var(--color-advertencia)' : 'var(--color-peligro)'}"></span>
             {{ estadoSync==='guardado' ? 'Guardado' : estadoSync==='sincronizando' ? 'Sincronizando…' : 'Error de conexión' }}
           </div>
         </div>
 
         <!-- Barra de resumen viva — sección 4.3 -->
-        <div v-if="cabecera" class="sticky top-0 z-10 bg-slate-800 text-white rounded px-4 py-2 mb-3 flex flex-wrap gap-x-6 gap-y-1 text-sm">
-          <div><span class="text-slate-300">Artículos con demanda:</span> <span class="font-semibold">{{ articulosVisibles.filter(c => totalArticulo(c) > 0).length }}</span></div>
-          <div><span class="text-slate-300">Unidades programadas:</span> <span class="font-semibold">{{ totalUnidadesVivo }}</span></div>
-          <div><span class="text-slate-300">Presupuesto Total Programado:</span> <span class="font-semibold">\${{ totalImporteVivo.toLocaleString('es-MX', {minimumFractionDigits:2, maximumFractionDigits:2}) }} MXN</span></div>
+        <div v-if="cabecera" class="sticky top-3 z-10 barra-glass rounded-2xl px-5 py-3 mb-4 flex flex-wrap gap-x-8 gap-y-1">
+          <div>
+            <div class="text-[10px] font-medium texto-terciario uppercase tracking-wide">Artículos</div>
+            <div class="text-base font-semibold mono">{{ articulosVisibles.filter(c => totalArticulo(c) > 0).length }}</div>
+          </div>
+          <div>
+            <div class="text-[10px] font-medium texto-terciario uppercase tracking-wide">Unidades</div>
+            <div class="text-base font-semibold mono">{{ totalUnidadesVivo }}</div>
+          </div>
+          <div>
+            <div class="text-[10px] font-medium texto-terciario uppercase tracking-wide">Presupuesto Programado</div>
+            <div class="text-base font-semibold mono" style="color: var(--color-acento);">\${{ totalImporteVivo.toLocaleString('es-MX', {minimumFractionDigits:2, maximumFractionDigits:2}) }} <span class="text-xs font-normal texto-terciario">MXN</span></div>
+          </div>
         </div>
 
-        <div v-if="!cabecera && !cargando" class="bg-white border rounded p-4 mb-4">
-          <p class="text-sm mb-2">No existe programación para este servicio/mes todavía.</p>
-          <button @click="crearProgramacion" class="bg-slate-800 text-white text-sm px-3 py-1.5 rounded">Crear programación</button>
+        <div v-if="!cabecera && !cargando" class="tarjeta px-6 py-10 mb-4 text-center">
+          <p class="text-sm texto-secundario mb-3">No existe programación para este servicio/mes todavía.</p>
+          <button @click="crearProgramacion" class="boton boton-primario">Crear programación</button>
         </div>
 
-        <div v-if="cabecera" class="bg-white border rounded p-3 mb-4">
-          <div class="flex flex-wrap gap-3 items-end mb-3">
-            <div>
-              <label class="block text-xs text-slate-500">Agregar artículo a la tabla</label>
-              <select v-model="articuloParaAgregar" :disabled="soloLectura" class="border rounded px-2 py-1 w-96 disabled:bg-slate-100">
+        <div v-if="cabecera" class="tarjeta p-4 mb-4">
+          <div class="flex flex-wrap gap-2.5 items-end mb-3.5">
+            <div class="flex-1 min-w-[240px]">
+              <label class="block text-[11px] font-medium texto-terciario mb-1">Agregar artículo</label>
+              <select v-model="articuloParaAgregar" :disabled="soloLectura" class="campo w-full max-w-md">
                 <option value="" disabled>Selecciona un artículo…</option>
                 <option v-for="a in articulos" :key="a.codigo_articulo" :value="a.codigo_articulo">{{ a.codigo_articulo }} — {{ a.descripcion }}</option>
               </select>
             </div>
-            <button @click="agregarArticuloVisible" :disabled="soloLectura" class="bg-slate-200 text-sm px-3 py-1.5 rounded disabled:opacity-50">Agregar</button>
-            <button @click="abrirPaleta" class="bg-white border text-sm px-3 py-1.5 rounded text-slate-600">🔍 Buscar (Ctrl+K)</button>
+            <button @click="agregarArticuloVisible" :disabled="soloLectura" class="boton boton-secundario">
+              <svg class="icono" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+              Agregar
+            </button>
+            <button @click="abrirPaleta" class="boton boton-fantasma">
+              <svg class="icono" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+              Buscar
+            </button>
           </div>
 
-          <div class="overflow-x-auto max-h-[60vh] border rounded" :class="{'opacity-90': soloLectura}">
-            <table class="text-xs freeze-panes w-full">
-              <thead class="sticky top-0 bg-slate-100">
+          <div class="overflow-x-auto max-h-[62vh] rounded-xl border" style="border-color: var(--color-borde-sutil);" :class="{'opacity-90': soloLectura}">
+            <table class="text-xs tabla-captura freeze-panes w-full">
+              <thead class="sticky top-0">
                 <tr>
-                  <th class="col-fija-izq px-2 py-1 text-left border-b border-r bg-slate-100" style="min-width:230px">Artículo</th>
-                  <th v-for="d in diasDelMes" :key="d" :class="['px-1 py-1 border-b text-center', esFinde(d) ? 'dia-finde' : '']" style="min-width:2.3rem">
-                    <div>{{ d }}</div><div class="text-[9px] text-slate-400">{{ diaSemana(d) }}</div>
+                  <th class="col-fija-izq px-3 py-2 text-left" style="min-width:230px">Artículo</th>
+                  <th v-for="d in diasDelMes" :key="d" :class="['py-2 text-center font-normal', esFinde(d) ? 'dia-finde' : '']" style="min-width:2.3rem">
+                    <div class="font-semibold">{{ d }}</div><div class="text-[9px] texto-terciario">{{ diaSemana(d) }}</div>
                   </th>
-                  <th class="col-fija-der px-2 py-1 border-b border-l bg-slate-100 text-left" style="min-width:9rem">Total / Techo / Tendencia</th>
+                  <th class="col-fija-der px-3 py-2 text-left" style="min-width:9.5rem">Total / Techo / Tendencia</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-for="codigo in articulosVisibles" :key="codigo" :data-fila-articulo="codigo"
-                    :class="['odd:bg-white even:bg-slate-50', {'fila-resaltada': filaResaltada===codigo}]">
-                  <td class="col-fija-izq px-2 py-1 border-r whitespace-nowrap bg-inherit" :title="descripcionArticulo(codigo)">{{ descripcionArticulo(codigo) }}</td>
-                  <td v-for="d in diasDelMes" :key="d" :class="['p-0.5', esFinde(d) ? 'dia-finde' : '']">
+                    :class="{'fila-resaltada': filaResaltada===codigo}">
+                  <td class="col-fija-izq px-3 py-1.5 whitespace-nowrap bg-inherit" :title="descripcionArticulo(codigo)">{{ descripcionArticulo(codigo) }}</td>
+                  <td v-for="d in diasDelMes" :key="d" :class="['p-0.5 text-center', esFinde(d) ? 'dia-finde' : '']">
                     <input type="number" min="0" :disabled="soloLectura" :data-codigo="codigo" :data-dia="d"
-                           class="celda-cantidad border rounded px-1 py-0.5 text-right disabled:bg-slate-100 disabled:text-slate-400"
+                           class="campo-celda"
                            v-model.number="detalle[claveCelda(codigo, d)]"
                            @focus="iniciarEdicion(codigo, d)"
                            @input="onCambiarCelda(codigo, d)"
                            @keydown="onKeydownCelda($event, codigo, d)"
                            @paste="onPasteCelda($event, codigo, d)">
                   </td>
-                  <td class="col-fija-der bg-inherit border-l px-2 py-1 align-top" style="min-width:9rem">
-                    <div class="flex items-center justify-between text-[11px]">
+                  <td class="col-fija-der bg-inherit px-3 py-1.5 align-top" style="min-width:9.5rem">
+                    <div class="flex items-center justify-between text-[11px] mono">
                       <span class="font-semibold">{{ totalArticulo(codigo) }}</span>
-                      <span v-if="pctTecho(codigo)!==null" class="text-slate-400">{{ (pctTecho(codigo)*100).toFixed(0) }}%</span>
+                      <span v-if="pctTecho(codigo)!==null" class="texto-terciario">{{ (pctTecho(codigo)*100).toFixed(0) }}%</span>
                     </div>
-                    <div v-if="pctTecho(codigo)!==null" class="barra-techo mt-0.5 mb-1">
+                    <div v-if="pctTecho(codigo)!==null" class="barra-techo mt-1 mb-1.5">
                       <div :class="colorTecho(pctTecho(codigo))" :style="{width: Math.min(100, pctTecho(codigo)*100) + '%'}"></div>
                     </div>
-                    <svg width="56" height="14" class="text-slate-400"><polyline :points="sparklinePoints(codigo)" fill="none" stroke="currentColor" stroke-width="1"/></svg>
+                    <svg width="52" height="14" style="color: var(--color-texto-terciario);"><polyline :points="sparklinePoints(codigo)" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
                   </td>
                 </tr>
               </tbody>
             </table>
           </div>
 
-          <div class="flex gap-2 mt-3">
-            <button v-if="puedeEnviar && cabecera.estatus==='BORRADOR'" @click="abrirModalEnviar"
-                    class="bg-emerald-700 text-white text-sm px-3 py-1.5 rounded">Revisar y Enviar</button>
-            <button v-if="esAdmin && cabecera.estatus==='ENVIADO'" @click="reabrirCargaActual"
-                    class="bg-amber-600 text-white text-sm px-3 py-1.5 rounded">Reabrir carga</button>
+          <div class="flex gap-2 mt-4">
+            <button v-if="puedeEnviar && cabecera.estatus==='BORRADOR'" @click="abrirModalEnviar" class="boton boton-exito">
+              <svg class="icono" viewBox="0 0 24 24"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+              Revisar y enviar
+            </button>
+            <button v-if="esAdmin && cabecera.estatus==='ENVIADO'" @click="reabrirCargaActual" class="boton boton-advertencia">
+              <svg class="icono" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
+              Reabrir carga
+            </button>
           </div>
         </div>
 
-        <div v-if="cabecera" class="bg-white border rounded p-3">
-          <h2 class="font-semibold text-sm mb-2">
-            {{ cabecera.estatus==='BORRADOR' ? 'Generar Vale de Pedido al Almacén' : 'Descargar PDF / Vale' }}
-          </h2>
+        <div v-if="cabecera" class="tarjeta p-4">
+          <h2 class="titulo-2 mb-3">{{ cabecera.estatus==='BORRADOR' ? 'Vale de pedido al almacén' : 'Descargar PDF / Vale' }}</h2>
           <div class="flex gap-2 items-end">
             <div>
-              <label class="block text-xs text-slate-500">Fecha</label>
-              <input type="date" v-model="fechaVale" class="border rounded px-2 py-1">
+              <label class="block text-[11px] font-medium texto-terciario mb-1">Fecha</label>
+              <input type="date" v-model="fechaVale" class="campo">
             </div>
-            <button @click="generarVale" class="bg-slate-800 text-white text-sm px-3 py-1.5 rounded">Generar PDF</button>
+            <button @click="generarVale" class="boton boton-primario">
+              <svg class="icono" viewBox="0 0 24 24"><path d="M12 3v12m0 0l-4-4m4 4l4-4"/><path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
+              Generar PDF
+            </button>
           </div>
         </div>
       </div>
 
       <!-- ===== Pestaña: Administración (sólo ADMINISTRADOR) ===== -->
       <div v-if="pestana==='admin' && esAdmin">
-        <div class="bg-white border rounded p-3 mb-4">
-          <h2 class="font-semibold text-sm mb-2">Usuarios</h2>
-          <table class="text-xs w-full mb-3">
-            <thead><tr class="text-left border-b"><th class="py-1">Correo</th><th>Nombre</th><th>Rol</th><th>Servicios asignados</th></tr></thead>
+        <div class="tarjeta p-4 mb-4">
+          <h2 class="titulo-2 mb-3">Usuarios</h2>
+          <table class="text-xs w-full mb-4 tabla-captura">
+            <thead><tr class="text-left"><th class="py-2 px-2">Correo</th><th class="py-2">Nombre</th><th class="py-2">Rol</th><th class="py-2">Servicios asignados</th></tr></thead>
             <tbody>
-              <tr v-for="u in usuarios" :key="u.usuario_id" class="border-b">
-                <td class="py-1">{{ u.correo }}</td><td>{{ u.nombre }}</td><td>{{ u.rol }}</td>
-                <td>
-                  <span v-for="s in u.servicios_asignados" :key="s.area_id" class="inline-flex items-center gap-1 bg-slate-100 rounded px-1.5 py-0.5 mr-1 mb-1">
-                    {{ s.nombre }} ({{ s.permiso }})
-                    <button @click="revocarServicio(u.usuario_id, s.area_id)" class="text-red-600">×</button>
+              <tr v-for="u in usuarios" :key="u.usuario_id">
+                <td class="py-2 px-2">{{ u.correo }}</td><td class="py-2">{{ u.nombre }}</td><td class="py-2">{{ u.rol }}</td>
+                <td class="py-2">
+                  <span v-for="s in u.servicios_asignados" :key="s.area_id" class="insignia insignia-gris mr-1 mb-1">
+                    {{ s.nombre }} · {{ s.permiso }}
+                    <button @click="revocarServicio(u.usuario_id, s.area_id)" class="ml-0.5 texto-terciario hover:text-red-500">×</button>
                   </span>
                 </td>
               </tr>
             </tbody>
           </table>
 
-          <div class="flex flex-wrap gap-2 items-end border-t pt-3">
-            <input v-model="nuevoUsuario.correo" placeholder="correo@hospital.org" class="border rounded px-2 py-1 text-sm">
-            <input v-model="nuevoUsuario.nombre" placeholder="Nombre" class="border rounded px-2 py-1 text-sm">
-            <select v-model="nuevoUsuario.rol" class="border rounded px-2 py-1 text-sm">
+          <div class="flex flex-wrap gap-2 items-end pt-3.5" style="border-top: 1px solid var(--color-borde-sutil);">
+            <input v-model="nuevoUsuario.correo" placeholder="correo@hospital.org" class="campo">
+            <input v-model="nuevoUsuario.nombre" placeholder="Nombre" class="campo">
+            <select v-model="nuevoUsuario.rol" class="campo">
               <option>CAPTURISTA</option><option>SUPERVISOR</option><option>ADMINISTRADOR</option>
             </select>
-            <button @click="crearUsuario" class="bg-slate-800 text-white text-sm px-3 py-1.5 rounded">Crear usuario</button>
+            <button @click="crearUsuario" class="boton boton-primario">Crear usuario</button>
           </div>
 
-          <div class="flex flex-wrap gap-2 items-end border-t pt-3 mt-3">
-            <select v-model="nuevaAsignacion.usuario_id" class="border rounded px-2 py-1 text-sm">
+          <div class="flex flex-wrap gap-2 items-end pt-3.5 mt-3.5" style="border-top: 1px solid var(--color-borde-sutil);">
+            <select v-model="nuevaAsignacion.usuario_id" class="campo">
               <option value="" disabled>Usuario…</option>
               <option v-for="u in usuarios" :key="u.usuario_id" :value="u.usuario_id">{{ u.correo }}</option>
             </select>
-            <select v-model="nuevaAsignacion.area_id" class="border rounded px-2 py-1 text-sm">
+            <select v-model="nuevaAsignacion.area_id" class="campo">
               <option value="" disabled>Servicio…</option>
               <option v-for="a in areas" :key="a.area_id" :value="a.area_id">{{ a.nombre }}</option>
             </select>
-            <select v-model="nuevaAsignacion.permiso" class="border rounded px-2 py-1 text-sm">
+            <select v-model="nuevaAsignacion.permiso" class="campo">
               <option>LECTURA</option><option>ESCRITURA</option><option>APROBACION</option>
             </select>
-            <button @click="asignarServicio" class="bg-slate-800 text-white text-sm px-3 py-1.5 rounded">Asignar servicio</button>
+            <button @click="asignarServicio" class="boton boton-primario">Asignar servicio</button>
           </div>
         </div>
 
-        <div class="bg-white border rounded p-3">
-          <h2 class="font-semibold text-sm mb-2">Consolidado General ({{ consolidadoGeneral.length }} filas)</h2>
-          <div class="overflow-x-auto max-h-[50vh]">
-            <table class="text-xs w-full">
-              <thead class="sticky top-0 bg-slate-100"><tr class="text-left">
-                <th class="px-2 py-1">Fecha</th><th>Servicio</th><th>Artículo</th><th>Cantidad</th><th>Enviado por</th>
+        <div class="tarjeta p-4">
+          <h2 class="titulo-2 mb-3">Consolidado General <span class="texto-terciario font-normal">({{ consolidadoGeneral.length }})</span></h2>
+          <div class="overflow-x-auto max-h-[50vh] rounded-xl border" style="border-color: var(--color-borde-sutil);">
+            <table class="text-xs w-full tabla-captura">
+              <thead class="sticky top-0"><tr class="text-left">
+                <th class="px-3 py-2">Fecha</th><th class="py-2">Servicio</th><th class="py-2">Artículo</th><th class="py-2">Cantidad</th><th class="py-2">Enviado por</th>
               </tr></thead>
               <tbody>
-                <tr v-for="c in consolidadoGeneral" :key="c.consolidado_id" class="odd:bg-white even:bg-slate-50">
-                  <td class="px-2 py-1">{{ c.fecha }}</td><td>{{ c.nombre_area }}</td>
-                  <td>{{ c.codigo_articulo }} — {{ c.descripcion_articulo }}</td>
-                  <td>{{ c.cantidad_programada }}</td><td>{{ c.correo_envio }}</td>
+                <tr v-for="c in consolidadoGeneral" :key="c.consolidado_id">
+                  <td class="px-3 py-1.5">{{ c.fecha }}</td><td class="py-1.5">{{ c.nombre_area }}</td>
+                  <td class="py-1.5">{{ c.codigo_articulo }} — {{ c.descripcion_articulo }}</td>
+                  <td class="py-1.5 mono">{{ c.cantidad_programada }}</td><td class="py-1.5">{{ c.correo_envio }}</td>
                 </tr>
               </tbody>
             </table>
@@ -587,39 +613,55 @@ createApp({
       </div>
 
       <!-- ===== Command Palette (Ctrl+K) — sección 2.3 ===== -->
-      <div v-if="paletaAbierta" class="fixed inset-0 bg-black/30 flex items-start justify-center pt-24 z-50" @click.self="paletaAbierta=false">
-        <div class="bg-white rounded shadow-lg w-full max-w-lg overflow-hidden">
-          <input ref="inputPaleta" v-model="paletaTexto" placeholder="Código o descripción del insumo… (Esc para cerrar)"
-                 class="w-full px-4 py-3 text-sm border-b outline-none">
-          <div class="max-h-80 overflow-y-auto">
+      <div v-if="paletaAbierta" class="fixed inset-0 fondo-modal flex items-start justify-center pt-24 z-50" @click.self="paletaAbierta=false">
+        <div class="panel-modal w-full max-w-lg overflow-hidden">
+          <div class="flex items-center gap-2 px-4 border-b" style="border-color: var(--color-borde-sutil);">
+            <svg class="icono texto-terciario" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+            <input ref="inputPaleta" v-model="paletaTexto" placeholder="Código o descripción del insumo…"
+                   class="w-full py-3.5 text-sm outline-none border-none bg-transparent">
+            <kbd class="text-[10px] texto-terciario px-1.5 py-0.5 rounded" style="background: var(--color-bg-secundario)">Esc</kbd>
+          </div>
+          <div class="max-h-80 overflow-y-auto py-1.5">
             <button v-for="a in resultadosPaleta" :key="a.codigo_articulo" @click="seleccionarResultadoPaleta(a)"
-                    class="block w-full text-left px-4 py-2 text-sm hover:bg-slate-100">
-              <span class="font-mono text-slate-500">{{ a.codigo_articulo }}</span> — {{ a.descripcion }}
+                    class="block w-full text-left px-4 py-2 text-sm hover:bg-[var(--color-bg-secundario)] transition-colors">
+              <span class="mono texto-terciario">{{ a.codigo_articulo }}</span> — {{ a.descripcion }}
             </button>
-            <div v-if="paletaTexto && resultadosPaleta.length===0" class="px-4 py-3 text-sm text-slate-400">Sin resultados.</div>
+            <div v-if="paletaTexto && resultadosPaleta.length===0" class="px-4 py-6 text-sm texto-terciario text-center">Sin resultados.</div>
           </div>
         </div>
       </div>
 
       <!-- ===== Modal de validación previa al envío — sección 6.1 ===== -->
-      <div v-if="modalEnviarAbierto" class="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
-        <div class="bg-white rounded shadow-lg w-full max-w-md p-5">
-          <h3 class="font-semibold mb-3">Confirmar envío de la programación</h3>
-          <ul class="text-sm space-y-1 mb-3">
-            <li>Artículos con demanda registrada: <span class="font-semibold">{{ resumenPreEnvio.totalArticulos }}</span></li>
-            <li>Unidades totales: <span class="font-semibold">{{ resumenPreEnvio.totalUnidades }}</span></li>
-            <li>Presupuesto estimado: <span class="font-semibold">\${{ resumenPreEnvio.totalImporte.toLocaleString('es-MX', {minimumFractionDigits:2, maximumFractionDigits:2}) }} MXN</span></li>
-          </ul>
-          <div v-if="resumenPreEnvio.altoCupo.length" class="bg-amber-50 border border-amber-200 rounded p-2 mb-3 text-xs">
-            <p class="font-semibold text-amber-800 mb-1">⚠ {{ resumenPreEnvio.altoCupo.length }} insumo(s) por encima del 90% de su cupo adjudicado:</p>
-            <ul class="list-disc list-inside text-amber-700">
-              <li v-for="a in resumenPreEnvio.altoCupo" :key="a.codigo">{{ a.descripcion }} — {{ (a.pct*100).toFixed(0) }}%</li>
+      <div v-if="modalEnviarAbierto" class="fixed inset-0 fondo-modal flex items-center justify-center z-50 px-4">
+        <div class="panel-modal w-full max-w-md p-6">
+          <h3 class="titulo-2 mb-4">Confirmar envío de la programación</h3>
+          <div class="grid grid-cols-3 gap-3 mb-4">
+            <div class="tarjeta px-3 py-2.5" style="box-shadow:none;">
+              <div class="text-[10px] font-medium texto-terciario uppercase">Artículos</div>
+              <div class="text-lg font-semibold mono">{{ resumenPreEnvio.totalArticulos }}</div>
+            </div>
+            <div class="tarjeta px-3 py-2.5" style="box-shadow:none;">
+              <div class="text-[10px] font-medium texto-terciario uppercase">Unidades</div>
+              <div class="text-lg font-semibold mono">{{ resumenPreEnvio.totalUnidades }}</div>
+            </div>
+            <div class="tarjeta px-3 py-2.5" style="box-shadow:none;">
+              <div class="text-[10px] font-medium texto-terciario uppercase">Presupuesto</div>
+              <div class="text-lg font-semibold mono" style="color: var(--color-acento);">\${{ resumenPreEnvio.totalImporte.toLocaleString('es-MX', {maximumFractionDigits:0}) }}</div>
+            </div>
+          </div>
+          <div v-if="resumenPreEnvio.altoCupo.length" class="rounded-xl p-3 mb-4 text-xs" style="background: rgba(255,159,10,0.08); border: 1px solid rgba(255,159,10,0.25);">
+            <p class="font-semibold mb-1.5 flex items-center gap-1.5" style="color:#b26500">
+              <svg class="icono" viewBox="0 0 24 24" style="stroke:#b26500; width:0.9rem; height:0.9rem;"><path d="M12 9v4M12 17h.01M10.3 3.9L2.4 18a2 2 0 001.7 3h15.8a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/></svg>
+              {{ resumenPreEnvio.altoCupo.length }} insumo(s) por encima del 90% de su cupo adjudicado
+            </p>
+            <ul class="space-y-0.5" style="color:#8a5a00">
+              <li v-for="a in resumenPreEnvio.altoCupo" :key="a.codigo">— {{ a.descripcion }} ({{ (a.pct*100).toFixed(0) }}%)</li>
             </ul>
           </div>
-          <p class="text-xs text-slate-500 mb-4">Al confirmar, la información se consolidará en el Resumen Global y la edición quedará bloqueada hasta que un administrador la reabra.</p>
+          <p class="text-xs texto-secundario mb-5 leading-relaxed">Al confirmar, la información se consolidará en el Resumen Global y la edición quedará bloqueada hasta que un administrador la reabra.</p>
           <div class="flex justify-end gap-2">
-            <button @click="modalEnviarAbierto=false" class="text-sm px-3 py-1.5 rounded border">Cancelar</button>
-            <button @click="confirmarEnvio" class="bg-emerald-700 text-white text-sm px-3 py-1.5 rounded">Confirmar y enviar</button>
+            <button @click="modalEnviarAbierto=false" class="boton boton-secundario">Cancelar</button>
+            <button @click="confirmarEnvio" class="boton boton-exito">Confirmar y enviar</button>
           </div>
         </div>
       </div>

@@ -1,21 +1,10 @@
 /**
- * CRUD de los 8 catálogos maestros. Cada guardarX() reproduce las mismas
+ * CRUD de los catálogos maestros. Cada guardarX() reproduce las mismas
  * restricciones que tenían en schema_dietologia.sql (UNIQUE, FK, CHECK).
+ * No hay guardarSede()/guardarAlmacen(): la herramienta es de una sola
+ * sede (SEDE_NOMBRE, 00_Config.gs) y un solo almacén, así que no son
+ * catálogos — son una constante.
  */
-
-function guardarUnidadMedida(datos) {
-  if (['PESO', 'VOLUMEN', 'PIEZA', 'PAQUETE'].indexOf(datos.tipo_medida) === -1) {
-    throw new Error('tipo_medida inválido: ' + datos.tipo_medida);
-  }
-  return conLock_(() => {
-    if (existeValor_('unidad_medida', 'clave', datos.clave)) {
-      throw new Error('Ya existe una unidad de medida con clave "' + datos.clave + '".');
-    }
-    const id = siguienteId_('unidad_medida');
-    escribirFila_('unidad_medida', Object.assign({ unidad_id: id }, datos));
-    return id;
-  });
-}
 
 function guardarFamilia(datos) {
   return conLock_(() => {
@@ -52,25 +41,12 @@ function guardarProveedor(datos) {
   });
 }
 
-function guardarSede(datos) {
-  if (['HOSPITAL', 'OFICINA_CENTRAL'].indexOf(datos.tipo_sede) === -1) {
-    throw new Error('tipo_sede inválido: ' + datos.tipo_sede);
-  }
-  return conLock_(() => {
-    if (buscarPorClave_('sede', 'sede_id', datos.sede_id)) {
-      throw new Error('Ya existe la sede "' + datos.sede_id + '".');
-    }
-    escribirFila_('sede', datos);
-    return datos.sede_id;
-  });
-}
-
 function guardarArticulo(datos) {
   if (!buscarPorClave_('grupo_alimento', 'grupo_id', datos.grupo_id)) {
     throw new Error('articulo: grupo_id ' + datos.grupo_id + ' no existe.');
   }
-  if (!buscarPorClave_('unidad_medida', 'unidad_id', datos.unidad_id)) {
-    throw new Error('articulo: unidad_id ' + datos.unidad_id + ' no existe.');
+  if (UNIDADES_MEDIDA.indexOf(datos.unidad_medida) === -1) {
+    throw new Error('articulo: unidad_medida inválida: ' + datos.unidad_medida);
   }
   return conLock_(() => {
     if (buscarPorClave_('articulo', 'codigo_articulo', datos.codigo_articulo)) {
@@ -85,28 +61,7 @@ function guardarArticulo(datos) {
   });
 }
 
-function guardarAlmacen(datos) {
-  if (!buscarPorClave_('sede', 'sede_id', datos.sede_id)) {
-    throw new Error('almacen: sede_id ' + datos.sede_id + ' no existe.');
-  }
-  if (['CENTRAL', 'PERIFERICO', 'COCINA'].indexOf(datos.tipo_almacen) === -1) {
-    throw new Error('tipo_almacen inválido: ' + datos.tipo_almacen);
-  }
-  return conLock_(() => {
-    const yaExiste = leerFilas_('almacen').some(
-      (f) => f.sede_id === datos.sede_id && f.clave_almacen === datos.clave_almacen
-    );
-    if (yaExiste) throw new Error('Ya existe el almacén "' + datos.clave_almacen + '" en la sede ' + datos.sede_id + '.');
-    const id = siguienteId_('almacen');
-    escribirFila_('almacen', Object.assign({ almacen_id: id }, datos));
-    return id;
-  });
-}
-
 function guardarAreaServicio(datos) {
-  if (datos.almacen_id && !buscarPorClave_('almacen', 'almacen_id', datos.almacen_id)) {
-    throw new Error('area_servicio: almacen_id ' + datos.almacen_id + ' no existe.');
-  }
   return conLock_(() => {
     if (existeValor_('area_servicio', 'clave', datos.clave)) {
       throw new Error('Ya existe el área de servicio "' + datos.clave + '".');
