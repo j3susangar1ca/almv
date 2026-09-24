@@ -19,6 +19,7 @@ function CONFIG_() {
   const props = PropertiesService.getScriptProperties();
   return {
     SPREADSHEET_ID: props.getProperty('SPREADSHEET_ID'),
+    CARPETA_CSV_ID: props.getProperty('CARPETA_CSV_ID') || '1uKZQ1RKhq71fuUaq--XbRTNYKT3RhnF4',
     CARPETA_DOCUMENTOS_ID: props.getProperty('CARPETA_DOCUMENTOS_ID'),
     PLANTILLA_VALE_PEDIDO_ID: props.getProperty('PLANTILLA_VALE_PEDIDO_ID'),
     PLANTILLA_ORDEN_COMPRA_ID: props.getProperty('PLANTILLA_ORDEN_COMPRA_ID'),
@@ -48,6 +49,7 @@ function configurarProyectoInicial(spreadsheetId) {
   }
   props.setProperties({
     SPREADSHEET_ID: id,
+    CARPETA_CSV_ID: '1uKZQ1RKhq71fuUaq--XbRTNYKT3RhnF4',
     CORREOS_NOTIFICACION: 'dietologia@hospitalcivil.example, almacen.viveres@hospitalcivil.example',
     DIAS_ALERTA_CADUCIDAD: '15',
     UMBRAL_ALERTA_TECHO_CONTRACTUAL: '0.9',

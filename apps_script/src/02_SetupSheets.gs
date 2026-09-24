@@ -10,8 +10,10 @@
  */
 function crearEstructuraCompleta() {
   const ss = SpreadsheetApp.openById(CONFIG_().SPREADSHEET_ID);
+  const nombresEsquema = Object.keys(ESQUEMA_HOJAS);
 
-  Object.keys(ESQUEMA_HOJAS).forEach((nombre) => {
+  // 1) Crear o limpiar cada pestaña del esquema oficial
+  nombresEsquema.forEach((nombre) => {
     const def = ESQUEMA_HOJAS[nombre];
     let sheet = ss.getSheetByName(nombre);
     if (!sheet) sheet = ss.insertSheet(nombre);
@@ -24,13 +26,25 @@ function crearEstructuraCompleta() {
     aplicarValidacionesColumna_(sheet, nombre, def.headers);
   });
 
-  // Elimina la pestaña "Hoja 1"/"Sheet1" por defecto si sigue vacía
-  const porDefecto = ss.getSheetByName('Hoja 1') || ss.getSheetByName('Sheet1');
-  if (porDefecto && porDefecto.getLastRow() === 0 && ss.getSheets().length > 1) {
-    ss.deleteSheet(porDefecto);
-  }
+  // 2) Borrar hojas existentes que no correspondan al esquema ni a las vistas
+  const hojasVistas = ['vista_consumo_diario', 'vista_ejecucion_contractual', 'vista_trazabilidad_oc'];
+  const todasLasHojas = ss.getSheets();
+  todasLasHojas.forEach((hoja) => {
+    const nombre = hoja.getName();
+    if (nombresEsquema.indexOf(nombre) === -1 && hojasVistas.indexOf(nombre) === -1) {
+      if (ss.getSheets().length > 1) {
+        ss.deleteSheet(hoja);
+      }
+    }
+  });
 
-  SpreadsheetApp.getUi().alert('Estructura creada: ' + Object.keys(ESQUEMA_HOJAS).length + ' pestañas. Siguiente paso: importarTodosLosCSV(idCarpetaDrive).');
+  const msg = 'Estructura creada exitosamente: ' + nombresEsquema.length + ' pestañas. Se eliminaron hojas adicionales previas. Siguiente paso: correr importarTodosLosCSV().';
+  Logger.log(msg);
+  try {
+    SpreadsheetApp.getUi().alert(msg);
+  } catch (e) {
+    // Si se ejecuta sin interfaz gráfica de UI
+  }
 }
 
 function aplicarValidacionesColumna_(sheet, nombreHoja, headers) {
