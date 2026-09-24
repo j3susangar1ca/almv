@@ -23,15 +23,32 @@ function CONFIG_() {
  * "Ejecutar" → seleccionar esta función) para dejar configurado el
  * proyecto antes de correr crearEstructuraCompleta().
  */
-function configurarProyectoInicial() {
+function configurarProyectoInicial(spreadsheetId) {
   const props = PropertiesService.getScriptProperties();
+  let id = spreadsheetId;
+  if (!id) {
+    const active = SpreadsheetApp.getActiveSpreadsheet();
+    if (active) id = active.getId();
+  }
+  if (!id) {
+    id = props.getProperty('SPREADSHEET_ID');
+  }
+  if (!id) {
+    throw new Error('Debes proporcionar el ID del Google Sheet. Ejemplo: configurarProyectoInicial("TU_SPREADSHEET_ID")');
+  }
   props.setProperties({
-    SPREADSHEET_ID: SpreadsheetApp.getActiveSpreadsheet().getId(),
+    SPREADSHEET_ID: id,
     CORREOS_NOTIFICACION: 'dietologia@hospitalcivil.example, almacen.viveres@hospitalcivil.example',
     DIAS_ALERTA_CADUCIDAD: '15',
     UMBRAL_ALERTA_TECHO_CONTRACTUAL: '0.9',
   }, false);
-  SpreadsheetApp.getUi().alert('Propiedades iniciales guardadas. Ajusta CARPETA_DOCUMENTOS_ID y las plantillas de Docs cuando las tengas creadas.');
+  const msg = 'Propiedades iniciales guardadas con SPREADSHEET_ID: ' + id;
+  Logger.log(msg);
+  try {
+    SpreadsheetApp.getUi().alert(msg);
+  } catch (e) {
+    // Si se ejecuta en un proyecto standalone sin contenedor de UI
+  }
 }
 
 /**

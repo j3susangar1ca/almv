@@ -66,9 +66,9 @@ function revocarUsuarioServicio(usuarioId, areaId) {
  * este módulo que no pasa por el gatekeeper de rol, porque hasta que se
  * ejecuta no existe ningún administrador que pudiera autorizarla.
  */
-function sembrarPrimerAdministrador() {
-  const correo = Session.getActiveUser().getEmail() || Session.getEffectiveUser().getEmail();
-  if (!correo) throw new Error('No se pudo determinar tu correo; ejecuta esta función desde el editor de Apps Script.');
+function sembrarPrimerAdministrador(correoManual) {
+  const correo = correoManual || Session.getActiveUser().getEmail() || Session.getEffectiveUser().getEmail();
+  if (!correo) throw new Error('No se pudo determinar tu correo; pasa tu correo como parámetro. Ejemplo: sembrarPrimerAdministrador("tu_correo@gmail.com")');
   if (existeValor_('usuarios', 'correo', correo)) {
     Logger.log('Ya existe un usuario con el correo ' + correo + '; no se creó uno nuevo.');
     return;
