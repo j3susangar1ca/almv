@@ -484,9 +484,14 @@ orden_suministro_rows = []
 orden_suministro_detalle_rows = []
 movimiento_inventario_rows = []
 existencia_almacen_rows = []
-note("lote, orden_suministro, orden_suministro_detalle, movimiento_inventario y "
-     "existencia_almacen se generan vacías (sólo encabezado): ninguna de las dos fuentes "
-     "origen contiene captura real de lotes, pedidos a proveedor o Kardex de almacén.")
+consolidacion_pedido_rows = []
+asignacion_salida_entrada_rows = []
+note("lote, orden_suministro, orden_suministro_detalle, movimiento_inventario, "
+     "existencia_almacen, consolidacion_pedido y asignacion_salida_entrada se generan "
+     "vacías (sólo encabezado): ninguna de las dos fuentes origen contiene captura real de "
+     "lotes, pedidos a proveedor, Kardex de almacén ni del proceso de consolidación de "
+     "demanda en Órdenes de Compra (ver Fase 5.1.1 del informe: es un flujo nuevo que el "
+     "sistema debe ejecutar hacia adelante, no algo reconstruible desde el Excel histórico).")
 
 # =====================================================================
 # 7. programacion_mensual / programacion_detalle — despivote de las 31
@@ -702,9 +707,14 @@ write_csv("orden_suministro_detalle", orden_suministro_detalle_rows,
            "cantidad_solicitada", "cantidad_recibida"])
 write_csv("movimiento_inventario", movimiento_inventario_rows,
           ["movimiento_id", "almacen_id", "codigo_articulo", "lote_id", "tipo_movimiento",
-           "cantidad", "orden_detalle_id", "fecha_movimiento", "referencia_documento"])
+           "cantidad", "orden_detalle_id", "programacion_detalle_id", "fecha_movimiento",
+           "referencia_documento"])
 write_csv("existencia_almacen", existencia_almacen_rows,
           ["almacen_id", "codigo_articulo", "lote_id", "cantidad_actual"])
+write_csv("consolidacion_pedido", consolidacion_pedido_rows,
+          ["consolidacion_id", "programacion_detalle_id", "orden_detalle_id", "cantidad_consolidada"])
+write_csv("asignacion_salida_entrada", asignacion_salida_entrada_rows,
+          ["asignacion_id", "movimiento_salida_id", "movimiento_entrada_id", "cantidad_asignada"])
 write_csv("programacion_mensual", programacion_mensual_rows,
           ["programacion_id", "area_id", "anio", "mes", "fecha_elaboracion", "estatus"])
 write_csv("programacion_detalle", programacion_detalle_rows,
@@ -737,7 +747,14 @@ with open(leeme, "w", encoding="utf-8") as f:
         "area_servicio → licitacion → contrato_articulo → cupo_contractual_sede → lote → "
         "orden_suministro → orden_suministro_detalle → movimiento_inventario → "
         "existencia_almacen → programacion_mensual → programacion_detalle → "
-        "produccion_diaria (coincide con la Fase 5 del informe).\n"
+        "produccion_diaria → consolidacion_pedido → asignacion_salida_entrada "
+        "(coincide con la Fase 5 del informe). Las dos últimas tablas y el proceso de "
+        "consolidación de OC (Fase 5.1.1) son un flujo operativo hacia adelante: arrancan "
+        "vacías porque no existen en el histórico de origen.\n"
+        "\n**Nota:** después de cargar cualquier tabla por `\\copy` con IDs explícitos "
+        "(como `programacion_detalle` o `contrato_articulo`), hay que sincronizar la "
+        "secuencia `SERIAL` correspondiente con `SELECT setval(...)` antes de insertar "
+        "nuevas filas por la aplicación — `\\copy` no la avanza automáticamente.\n"
     )
 print(f"  -> LEEME.md ({len(NOTES)} notas)")
 print("\nETL completado.")

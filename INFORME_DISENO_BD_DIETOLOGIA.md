@@ -77,7 +77,7 @@ Estas anomalías se traducen en tres riesgos concretos para el negocio:
 7. **Separación de jerarquía física**: `sede` (unidad hospitalaria: FAA/JIM/ORI/OPD, nivel contractual) es distinta de `almacen` (ubicación física: central vs. periférico/cocina, nivel logístico) y de `area_servicio` (punto de consumo/programación: `PACIENTES`, `COMEDOR`, `JORNADA`, `DIETOLOGÍA`, `BANCO DE LECHE`, `NUTRICIÓN CLÍNICA`, `TORTILLERIA`, `PANADERIA` — que corresponden 1:1 a las hojas operativas del libro Excel). Esta separación permite que una sede tenga múltiples almacenes y que un almacén sirva a múltiples áreas de consumo.
 8. **Tipado consistente de claves de negocio**: `codigo_articulo` y `proveedor_id` se tipifican como `VARCHAR` desde el diseño (nunca `INT`), anticipando proveedores alfanuméricos como `A4684` y evitando la colisión de tipo detectada en P6.
 
-### 2.2 Listado de entidades del modelo (18 tablas, 3FN)
+### 2.2 Listado de entidades del modelo (21 tablas, 3FN)
 
 **Catálogos maestros (sin dependencias, 1:N hacia el resto):**
 1. `unidad_medida` — catálogo único de unidades (resuelve la heterogeneidad de `PRESENTACION`/`UNIDAD DE MEDIDA`: KG, PIEZA, LITRO, CAJA, PAQUETE, FRASCO, BOTE, GALÓN, BIDÓN, SOBRE, BOLSA, MANOJO, LATA).
@@ -100,7 +100,7 @@ Estas anomalías se traducen en tres riesgos concretos para el negocio:
 12. `lote` (FK → `articulo`, `proveedor`).
 13. `orden_suministro` (encabezado de pedido; FK → `proveedor`, `sede`).
 14. `orden_suministro_detalle` (FK → `orden_suministro`, `contrato_articulo`).
-15. `movimiento_inventario` (Kardex; FK → `almacen`, `articulo`, `lote`, `orden_suministro_detalle`).
+15. `movimiento_inventario` (Kardex; FK → `almacen`, `articulo`, `lote`, `orden_suministro_detalle`, `programacion_detalle` opcional).
 16. `existencia_almacen` (saldo vigente por almacén/artículo/lote; mantenida por los movimientos).
 
 **Dominio de programación y producción operativa (sustituye la matriz de días):**
@@ -108,7 +108,11 @@ Estas anomalías se traducen en tres riesgos concretos para el negocio:
 18. `programacion_detalle` (FK → `programacion_mensual`, `articulo`; una fila por día, sustituye las 31 columnas y la columna `TOTAL`).
 19. `produccion_diaria` (FK → `area_servicio`, `articulo` opcional; sustituye las hojas de texto libre `TORTILLAS`/`PAN`).
 
-*(19 tablas en total — se listan 18 numeradas más el detalle 17/18/19; ver DDL para el conteo exacto.)*
+**Dominio de consolidación de pedidos y trazabilidad demanda↔entrada↔salida (nuevo, ver 2.4):**
+20. `consolidacion_pedido` (tabla puente `programacion_detalle` × `orden_suministro_detalle`, N:M; registra qué renglones de demanda por área se agregaron en cada renglón de Orden de Compra).
+21. `asignacion_salida_entrada` (tabla puente `movimiento_inventario` salida × `movimiento_inventario` entrada, N:M; registra con qué recepción(es) se surtió cada entrega a un área).
+
+*(21 tablas en total; ver DDL para el detalle completo.)*
 
 ### 2.3 Justificación de cardinalidades clave
 
@@ -121,6 +125,36 @@ Estas anomalías se traducen en tres riesgos concretos para el negocio:
 | `almacen` × `articulo` × `lote` → `existencia_almacen` | N:M (vía tabla de saldos) | Un mismo artículo puede tener existencia en varios almacenes y en varios lotes distintos dentro del mismo almacén. |
 | `area_servicio` → `programacion_mensual` | 1:N | Cada área de consumo (hoja del libro operativo) genera una programación mensual propia, una vez por mes/año (`UNIQUE(area_id, anio, mes)`). |
 | `programacion_mensual` → `programacion_detalle` | 1:N | Un encabezado de programación contiene una fila por artículo y por día calendario del mes (despivote de las 31 columnas de día). |
+| `programacion_detalle` × `orden_suministro_detalle` → `consolidacion_pedido` | N:M | Varias filas de demanda (distintas áreas, distintos días) se agregan hacia uno o más renglones de Orden de Compra; en el caso general una sola OC concentra la demanda de todo el periodo. |
+| `movimiento_inventario` (salida) × `movimiento_inventario` (entrada) → `asignacion_salida_entrada` | N:M | Una entrada puede repartirse entre varias salidas y, si un lote se agota a media entrega, una salida puede cubrirse con más de una entrada. |
+
+### 2.4 Consolidación de pedidos en Órdenes de Compra y trazabilidad entrada↔salida
+
+Este es el mecanismo que faltaba para cerrar el ciclo completo **demanda → compra → almacén → entrega**, y responde directamente a la necesidad operativa planteada: varias áreas piden el mismo artículo por separado (`programacion_detalle`), Compras consolida esa demanda por proveedor y genera una sola Orden de Compra, Almacén recibe una sola entrada física, y esa entrada se reparte de vuelta hacia las áreas que la pidieron. Sin esta capa, la Orden de Compra, la entrada de almacén y las salidas a Dietología quedarían como hechos aislados, exactamente como ocurre hoy en el Excel de origen (no hay ninguna columna que ligue una recepción con la programación que la originó).
+
+**Ejemplo de trazabilidad extremo a extremo** (el mismo que motivó este cambio: 10 kg para `PACIENTES` + 10 kg para `COMEDOR` del mismo artículo y proveedor):
+
+```
+programacion_detalle (PACIENTES, art. X, 10 kg) ──┐
+                                                    ├──> consolidacion_pedido ──> orden_suministro_detalle (20 kg) ──> orden_suministro (OC, proveedor Y)
+programacion_detalle (COMEDOR,   art. X, 10 kg) ──┘                                        │
+                                                                                            ▼
+                                                                      movimiento_inventario ENTRADA_COMPRA (20 kg, orden_detalle_id, lote_id)
+                                                                                            │
+                                                                          asignacion_salida_entrada (reparte la entrada)
+                                                                                ┌───────────┴───────────┐
+                                                                                ▼                       ▼
+                                                    movimiento_inventario SALIDA_CONSUMO       movimiento_inventario SALIDA_CONSUMO
+                                                    (10 kg, almacén→PACIENTES,                  (10 kg, almacén→COMEDOR,
+                                                     programacion_detalle_id = PACIENTES)         programacion_detalle_id = COMEDOR)
+```
+
+1. **Consolidación (demanda → OC):** `consolidacion_pedido` vincula cada renglón de `programacion_detalle` con el renglón de `orden_suministro_detalle` que lo agregó. La cantidad de la OC (`cantidad_solicitada`) es la suma de las consolidaciones que la respaldan; un trigger (`trg_valida_consolidacion_pedido`, ver DDL) impide consolidar hacia un artículo distinto al programado y evita que la suma consolidada exceda lo que la OC declara.
+2. **Entrada (OC → almacén):** ya existente en el modelo — `movimiento_inventario` con `tipo_movimiento='ENTRADA_COMPRA'` y `orden_detalle_id` apuntando al renglón de OC recién surtido; los 20 kg entran en un único `lote`.
+3. **Salida (almacén → Dietología/área):** cada entrega a un área se registra como `movimiento_inventario` con `tipo_movimiento='SALIDA_CONSUMO'`, y ahora incluye `programacion_detalle_id` (columna nueva) para saber **a qué solicitud de área** corresponde esa entrega.
+4. **Asignación (qué entrada cubrió qué salida):** `asignacion_salida_entrada` liga cada salida con la o las entradas de donde salió físicamente la mercancía. Un trigger (`trg_valida_asignacion_salida_entrada`) obliga a que ambos movimientos sean del mismo artículo/almacén/lote y a que ninguna suma de asignaciones exceda la cantidad real de la entrada ni de la salida — es decir, impide por diseño que de una entrada de 20 kg se "repartan" 25 kg entre las salidas.
+
+Con esto, una pregunta como *"¿de qué proveedor y de qué Orden de Compra vinieron los 10 kg que Dietología entregó a Comedor el día 14?"* se resuelve con un solo recorrido de llaves foráneas, sin reconciliar hojas de Excel a mano.
 
 ---
 
@@ -243,7 +277,7 @@ Estas anomalías se traducen en tres riesgos concretos para el negocio:
 | fecha_recepcion | DATE | — | No | `DEFAULT CURRENT_DATE` | Fecha de ingreso a almacén. |
 | — | — | — | — | `UNIQUE(codigo_articulo, proveedor_id, numero_lote_proveedor)` | Evita duplicar el mismo lote físico. |
 
-### 3.13 `orden_suministro`
+### 3.13 `orden_suministro` (Orden de Compra / OC)
 | Campo | Tipo | PK/FK | Nulo | Restricciones/Checks | Descripción |
 |---|---|---|---|---|---|
 | orden_id | BIGSERIAL | PK | No | — | Encabezado del pedido al proveedor. |
@@ -272,7 +306,8 @@ Estas anomalías se traducen en tres riesgos concretos para el negocio:
 | lote_id | BIGINT | FK → `lote` | No | `DEFAULT 0` (centinela `'SIN LOTE'`) | Lote afectado; obligatorio siempre (evita nulos en la llave de saldos). |
 | tipo_movimiento | VARCHAR(20) | — | No | `CHECK IN ('ENTRADA_COMPRA','SALIDA_CONSUMO','TRANSFERENCIA_SALIDA','TRANSFERENCIA_ENTRADA','MERMA','AJUSTE_POSITIVO','AJUSTE_NEGATIVO')` | Naturaleza del movimiento. |
 | cantidad | NUMERIC(12,2) | — | No | `CHECK (cantidad > 0)` | Magnitud del movimiento (siempre positiva; el signo lo define `tipo_movimiento`). |
-| orden_detalle_id | BIGINT | FK → `orden_suministro_detalle` | Sí | — | Enlaza la entrada física con el pedido de origen, cuando aplica. |
+| orden_detalle_id | BIGINT | FK → `orden_suministro_detalle` | Sí | — | Enlaza la entrada física con el renglón de OC de origen, cuando aplica (`tipo_movimiento='ENTRADA_COMPRA'`). |
+| programacion_detalle_id | BIGINT | FK → `programacion_detalle` | Sí | — | Enlaza la salida con la solicitud de área/día que cubre, cuando aplica (`tipo_movimiento='SALIDA_CONSUMO'`); es la columna que cierra el ciclo demanda→entrega descrito en 2.4. |
 | fecha_movimiento | TIMESTAMP | — | No | `DEFAULT now()` | Momento del movimiento. |
 | referencia_documento | VARCHAR(60) | — | Sí | — | Folio de remisión, factura o vale de salida. |
 
@@ -317,6 +352,24 @@ Estas anomalías se traducen en tres riesgos concretos para el negocio:
 | cantidad | NUMERIC(12,2) | — | No | `CHECK (cantidad > 0)` | Cantidad producida/entregada. |
 | unidad_id | SMALLINT | FK → `unidad_medida` | No | — | Unidad de la cantidad. |
 | — | — | — | — | `CHECK (codigo_articulo IS NOT NULL OR producto_texto IS NOT NULL)` | Exige al menos una referencia de producto (evita filas vacías). |
+
+### 3.20 `consolidacion_pedido`
+| Campo | Tipo | PK/FK | Nulo | Restricciones/Checks | Descripción |
+|---|---|---|---|---|---|
+| consolidacion_id | BIGSERIAL | PK | No | — | Renglón de trazabilidad demanda→OC. |
+| programacion_detalle_id | BIGINT | FK → `programacion_detalle` (`ON DELETE CASCADE`) | No | — | Solicitud de área/día que se está agregando. |
+| orden_detalle_id | BIGINT | FK → `orden_suministro_detalle` (`ON DELETE CASCADE`) | No | — | Renglón de OC que la consolida. |
+| cantidad_consolidada | NUMERIC(12,2) | — | No | `CHECK (cantidad_consolidada > 0)` | Porción de `cantidad_programada` que se incluyó en esta OC (normalmente el total; admite consolidación parcial entre dos periodos de compra). |
+| — | — | — | — | `UNIQUE(programacion_detalle_id, orden_detalle_id)`; trigger `trg_valida_consolidacion_pedido` | El trigger exige que el artículo programado coincida con el artículo de la OC y que la suma de consolidaciones de un renglón de OC nunca exceda su `cantidad_solicitada` (ver 2.4 y DDL). |
+
+### 3.21 `asignacion_salida_entrada`
+| Campo | Tipo | PK/FK | Nulo | Restricciones/Checks | Descripción |
+|---|---|---|---|---|---|
+| asignacion_id | BIGSERIAL | PK | No | — | Renglón de trazabilidad entrada→salida. |
+| movimiento_salida_id | BIGINT | FK → `movimiento_inventario` (`ON DELETE CASCADE`) | No | — | Movimiento de salida (entrega a un área) que se está cubriendo. |
+| movimiento_entrada_id | BIGINT | FK → `movimiento_inventario` (`ON DELETE CASCADE`) | No | — | Movimiento de entrada del que físicamente salió la mercancía. |
+| cantidad_asignada | NUMERIC(12,2) | — | No | `CHECK (cantidad_asignada > 0)`, `CHECK (movimiento_salida_id <> movimiento_entrada_id)` | Cantidad de la salida cubierta por esta entrada específica. |
+| — | — | — | — | `UNIQUE(movimiento_salida_id, movimiento_entrada_id)`; trigger `trg_valida_asignacion_salida_entrada` | El trigger exige mismo artículo/almacén/lote entre ambos movimientos y que ninguna suma de asignaciones exceda la cantidad real de la entrada ni de la salida (evita "repartir" más de lo que físicamente entró o salió). |
 
 ---
 
@@ -570,10 +623,151 @@ CREATE TABLE dietologia.produccion_diaria (
 );
 
 -- =====================================================================
--- 6. ÍNDICES OPERATIVOS RECOMENDADOS
+-- 6. CONSOLIDACIÓN DE PEDIDOS EN ÓRDENES DE COMPRA Y TRAZABILIDAD
+--    ENTRADA -> SALIDA DE ALMACÉN (ver Fase 2.4 del informe)
 -- =====================================================================
 
--- Requerida antes de crear el índice de búsqueda de texto de la sección 6.2
+-- La salida de almacén queda ligada a la solicitud de área/día que
+-- cubre (ej. la entrega de 10 kg a PACIENTES). Se agrega por ALTER
+-- porque programacion_detalle se define en la sección 5, posterior a
+-- movimiento_inventario.
+ALTER TABLE dietologia.movimiento_inventario
+    ADD COLUMN programacion_detalle_id BIGINT
+        REFERENCES dietologia.programacion_detalle(programacion_detalle_id);
+
+-- Vínculo entre la demanda programada por área (programacion_detalle) y
+-- el renglón de Orden de Compra (orden_suministro_detalle) que la
+-- consolida. Varias filas de programacion_detalle (de distintas áreas y
+-- distintos días del periodo) se agregan hacia uno o más renglones de OC
+-- por proveedor+artículo (ej. 10 kg PACIENTES + 10 kg COMEDOR -> 20 kg
+-- en un solo renglón de OC).
+CREATE TABLE dietologia.consolidacion_pedido (
+    consolidacion_id           BIGSERIAL PRIMARY KEY,
+    programacion_detalle_id     BIGINT NOT NULL REFERENCES dietologia.programacion_detalle(programacion_detalle_id) ON DELETE CASCADE,
+    orden_detalle_id             BIGINT NOT NULL REFERENCES dietologia.orden_suministro_detalle(orden_detalle_id) ON DELETE CASCADE,
+    cantidad_consolidada          NUMERIC(12,2) NOT NULL CHECK (cantidad_consolidada > 0),
+    UNIQUE (programacion_detalle_id, orden_detalle_id)
+);
+
+-- Exige que el artículo programado coincida con el artículo de la OC y
+-- que la suma de consolidaciones de un renglón de OC nunca exceda su
+-- cantidad_solicitada (la OC se crea primero con el total ya agregado
+-- por el proceso de compras; ver Fase 5.2 del informe).
+CREATE OR REPLACE FUNCTION dietologia.fn_valida_consolidacion_pedido()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_articulo_programado   VARCHAR(15);
+    v_articulo_ordenado     VARCHAR(15);
+    v_cantidad_solicitada   NUMERIC(12,2);
+    v_suma_consolidada      NUMERIC(12,2);
+BEGIN
+    SELECT codigo_articulo INTO v_articulo_programado
+      FROM dietologia.programacion_detalle
+     WHERE programacion_detalle_id = NEW.programacion_detalle_id;
+
+    SELECT ca.codigo_articulo, osd.cantidad_solicitada
+      INTO v_articulo_ordenado, v_cantidad_solicitada
+      FROM dietologia.orden_suministro_detalle osd
+      JOIN dietologia.contrato_articulo ca ON ca.contrato_articulo_id = osd.contrato_articulo_id
+     WHERE osd.orden_detalle_id = NEW.orden_detalle_id;
+
+    IF v_articulo_programado IS DISTINCT FROM v_articulo_ordenado THEN
+        RAISE EXCEPTION 'consolidacion_pedido: el artículo programado (%) no coincide con el artículo de la OC (%)',
+            v_articulo_programado, v_articulo_ordenado;
+    END IF;
+
+    SELECT COALESCE(SUM(cantidad_consolidada), 0) INTO v_suma_consolidada
+      FROM dietologia.consolidacion_pedido
+     WHERE orden_detalle_id = NEW.orden_detalle_id
+       AND consolidacion_id <> COALESCE(NEW.consolidacion_id, -1);
+
+    IF v_suma_consolidada + NEW.cantidad_consolidada > v_cantidad_solicitada THEN
+        RAISE EXCEPTION 'consolidacion_pedido: la suma consolidada (%) excedería la cantidad_solicitada de la OC (%)',
+            v_suma_consolidada + NEW.cantidad_consolidada, v_cantidad_solicitada;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_valida_consolidacion_pedido
+    BEFORE INSERT OR UPDATE ON dietologia.consolidacion_pedido
+    FOR EACH ROW EXECUTE FUNCTION dietologia.fn_valida_consolidacion_pedido();
+
+-- Trazabilidad de asignación de existencias: qué SALIDA (entrega de
+-- almacén a un área) se surtió con qué ENTRADA (recepción ligada a una
+-- OC). Permite dividir una sola entrada (ej. 20 kg) entre varias salidas
+-- (10 kg a PACIENTES + 10 kg a COMEDOR) y, si un lote se agota, cubrir
+-- una salida con más de una entrada.
+CREATE TABLE dietologia.asignacion_salida_entrada (
+    asignacion_id           BIGSERIAL PRIMARY KEY,
+    movimiento_salida_id      BIGINT NOT NULL REFERENCES dietologia.movimiento_inventario(movimiento_id) ON DELETE CASCADE,
+    movimiento_entrada_id     BIGINT NOT NULL REFERENCES dietologia.movimiento_inventario(movimiento_id) ON DELETE CASCADE,
+    cantidad_asignada          NUMERIC(12,2) NOT NULL CHECK (cantidad_asignada > 0),
+    CHECK (movimiento_salida_id <> movimiento_entrada_id),
+    UNIQUE (movimiento_salida_id, movimiento_entrada_id)
+);
+
+-- Exige que ambos movimientos sean, respectivamente, una salida y una
+-- entrada reales; que compartan artículo/almacén/lote; y que ninguna
+-- suma de asignaciones exceda la cantidad física de la entrada ni de la
+-- salida (impide "repartir" más de lo que realmente entró o salió).
+CREATE OR REPLACE FUNCTION dietologia.fn_valida_asignacion_salida_entrada()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_salida         dietologia.movimiento_inventario%ROWTYPE;
+    v_entrada        dietologia.movimiento_inventario%ROWTYPE;
+    v_suma_entrada   NUMERIC(12,2);
+    v_suma_salida    NUMERIC(12,2);
+BEGIN
+    SELECT * INTO v_salida  FROM dietologia.movimiento_inventario WHERE movimiento_id = NEW.movimiento_salida_id;
+    SELECT * INTO v_entrada FROM dietologia.movimiento_inventario WHERE movimiento_id = NEW.movimiento_entrada_id;
+
+    IF v_salida.tipo_movimiento NOT IN ('SALIDA_CONSUMO','TRANSFERENCIA_SALIDA','MERMA','AJUSTE_NEGATIVO') THEN
+        RAISE EXCEPTION 'asignacion_salida_entrada: el movimiento % no es una salida (tipo=%)',
+            NEW.movimiento_salida_id, v_salida.tipo_movimiento;
+    END IF;
+    IF v_entrada.tipo_movimiento NOT IN ('ENTRADA_COMPRA','TRANSFERENCIA_ENTRADA','AJUSTE_POSITIVO') THEN
+        RAISE EXCEPTION 'asignacion_salida_entrada: el movimiento % no es una entrada (tipo=%)',
+            NEW.movimiento_entrada_id, v_entrada.tipo_movimiento;
+    END IF;
+    IF v_salida.codigo_articulo <> v_entrada.codigo_articulo
+       OR v_salida.almacen_id <> v_entrada.almacen_id
+       OR v_salida.lote_id <> v_entrada.lote_id THEN
+        RAISE EXCEPTION 'asignacion_salida_entrada: la salida % y la entrada % no corresponden al mismo artículo/almacén/lote',
+            NEW.movimiento_salida_id, NEW.movimiento_entrada_id;
+    END IF;
+
+    SELECT COALESCE(SUM(cantidad_asignada), 0) INTO v_suma_entrada
+      FROM dietologia.asignacion_salida_entrada
+     WHERE movimiento_entrada_id = NEW.movimiento_entrada_id
+       AND asignacion_id <> COALESCE(NEW.asignacion_id, -1);
+    IF v_suma_entrada + NEW.cantidad_asignada > v_entrada.cantidad THEN
+        RAISE EXCEPTION 'asignacion_salida_entrada: se asignaría % contra una entrada de sólo % unidades',
+            v_suma_entrada + NEW.cantidad_asignada, v_entrada.cantidad;
+    END IF;
+
+    SELECT COALESCE(SUM(cantidad_asignada), 0) INTO v_suma_salida
+      FROM dietologia.asignacion_salida_entrada
+     WHERE movimiento_salida_id = NEW.movimiento_salida_id
+       AND asignacion_id <> COALESCE(NEW.asignacion_id, -1);
+    IF v_suma_salida + NEW.cantidad_asignada > v_salida.cantidad THEN
+        RAISE EXCEPTION 'asignacion_salida_entrada: se asignaría % contra una salida de sólo % unidades',
+            v_suma_salida + NEW.cantidad_asignada, v_salida.cantidad;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_valida_asignacion_salida_entrada
+    BEFORE INSERT OR UPDATE ON dietologia.asignacion_salida_entrada
+    FOR EACH ROW EXECUTE FUNCTION dietologia.fn_valida_asignacion_salida_entrada();
+
+-- =====================================================================
+-- 7. ÍNDICES OPERATIVOS RECOMENDADOS
+-- =====================================================================
+
+-- Requerida antes de crear el índice de búsqueda de texto más abajo
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- Búsqueda de lotes próximos a caducar (operación diaria crítica de Dietología)
@@ -598,6 +792,19 @@ CREATE INDEX ix_programacion_detalle_articulo ON dietologia.programacion_detalle
 
 -- Trazabilidad de contratos vigentes por artículo
 CREATE INDEX ix_contrato_articulo_codigo ON dietologia.contrato_articulo (codigo_articulo) WHERE activo;
+
+-- Consolidación de pedidos en OC (sección 6): resolver en ambos sentidos
+-- "¿qué áreas están detrás de este renglón de OC?" y "¿en qué OC quedó
+-- consolidada esta solicitud de área?"
+CREATE INDEX ix_consolidacion_pedido_orden ON dietologia.consolidacion_pedido (orden_detalle_id);
+CREATE INDEX ix_consolidacion_pedido_programacion ON dietologia.consolidacion_pedido (programacion_detalle_id);
+
+-- Trazabilidad entrada<->salida (sección 6) y salidas ligadas a una
+-- solicitud de área
+CREATE INDEX ix_asignacion_entrada ON dietologia.asignacion_salida_entrada (movimiento_entrada_id);
+CREATE INDEX ix_asignacion_salida ON dietologia.asignacion_salida_entrada (movimiento_salida_id);
+CREATE INDEX ix_movimiento_programacion_detalle ON dietologia.movimiento_inventario (programacion_detalle_id)
+    WHERE programacion_detalle_id IS NOT NULL;
 ```
 
 ---
@@ -620,7 +827,19 @@ CREATE INDEX ix_contrato_articulo_codigo ON dietologia.contrato_articulo (codigo
 12. `existencia_almacen` — se recalcula/materializa **después** de cargar el histórico de movimientos (nunca se carga directamente desde Excel).
 13. `programacion_mensual` (depende de `area_servicio`).
 14. `programacion_detalle` (depende de `programacion_mensual`, `articulo`) — poblada por el **despivote** de las 31 columnas de día de cada hoja del libro `PROGRAMACION_OCTUBRE_26.xlsx`.
-15. `produccion_diaria` (depende de `area_servicio`, opcionalmente `articulo`) — poblada tras el parsing de texto libre de `TORTILLAS`/`PAN`; es la última en cargarse por requerir revisión manual de calidad.
+15. `produccion_diaria` (depende de `area_servicio`, opcionalmente `articulo`) — poblada tras el parsing de texto libre de `TORTILLAS`/`PAN`.
+16. `consolidacion_pedido` (depende de `programacion_detalle` y `orden_suministro_detalle`) — se puebla **después** de que Compras consolida la demanda del periodo y genera la OC (ver 5.2.1); no existe en ninguna de las dos fuentes origen, arranca vacía.
+17. `asignacion_salida_entrada` (depende de `movimiento_inventario`, tanto de la entrada como de la(s) salida(s) que reparte) — se puebla al momento de surtir cada salida de almacén; también arranca vacía, es la última en cargarse.
+
+#### 5.1.1 Proceso de consolidación de pedidos en Orden de Compra (nuevo)
+
+Este proceso no viene de ninguna de las dos fuentes origen (ni el Excel ni el contrato registran hoy una consolidación de demanda); es la regla de negocio que el sistema nuevo debe ejecutar para generar cada OC:
+
+1. **Agregar demanda por proveedor+artículo+periodo:** `SELECT codigo_articulo, SUM(cantidad_programada) FROM programacion_detalle ... GROUP BY codigo_articulo, periodo` a través de **todas las áreas** (`PACIENTES`, `COMEDOR`, `JORNADA`, etc.), resolviendo el `proveedor_id` vigente vía `contrato_articulo` (`WHERE activo`). Ej.: 10 kg de `PACIENTES` + 10 kg de `COMEDOR` del mismo artículo ⇒ 20 kg agregados para el proveedor adjudicado.
+2. **Crear el encabezado `orden_suministro`** (una OC por proveedor y periodo) y su(s) `orden_suministro_detalle` con `cantidad_solicitada` = la suma calculada en el paso 1 (20 kg en el ejemplo).
+3. **Insertar `consolidacion_pedido`** por cada `programacion_detalle` que aportó a esa suma (una fila por PACIENTES, otra por COMEDOR), con su `cantidad_consolidada` correspondiente. El trigger `trg_valida_consolidacion_pedido` rechaza la carga si la suma no cuadra con `cantidad_solicitada` o si algún renglón corresponde a un artículo distinto — así el sistema queda protegido contra una consolidación mal armada.
+4. **Recepción (entrada):** al llegar la mercancía, se inserta `movimiento_inventario` con `tipo_movimiento='ENTRADA_COMPRA'` y `orden_detalle_id` apuntando al renglón de OC recién surtido (ya existente en el modelo desde la primera versión de este informe).
+5. **Entrega a las áreas (salida) y asignación:** por cada entrega física a una `area_servicio`, se inserta `movimiento_inventario` con `tipo_movimiento='SALIDA_CONSUMO'` y `programacion_detalle_id` apuntando a la solicitud original de esa área; y se inserta `asignacion_salida_entrada` ligando esa salida con la entrada de la que provino. El trigger `trg_valida_asignacion_salida_entrada` impide que la suma de las salidas asignadas a una entrada exceda lo realmente recibido.
 
 ### 5.2 Reglas de transformación — dominio contractual (`licitacion.csv` / `LPL472026`)
 
