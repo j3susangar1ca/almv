@@ -1,0 +1,5 @@
+almacen_id,sede_id,clave_almacen,nombre,tipo_almacen
+1,FAA,CENTRAL,Almacén Central FAA,CENTRAL
+2,JIM,CENTRAL,Almacén Central JIM,CENTRAL
+3,ORI,CENTRAL,Almacén Central ORI,CENTRAL
+4,OPD,CENTRAL,Almacén Central OPD,CENTRAL

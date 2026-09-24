@@ -1,0 +1,11 @@
+area_id,clave,nombre,almacen_id,activo
+1,GENERAL,General,1,True
+2,PACIENTES,Pacientes,1,True
+3,COMEDOR,Comedor,1,True
+4,JORNADA,Jornada,1,True
+5,DIETOLOGIA,Dietología(S),1,True
+6,BANCO_LECHE,Banco De Leche,1,True
+7,NUTRICION_CLINICA,Nutrición Clínica,1,True
+8,RECEPCION,Recepción,1,False
+9,TORTILLERIA,Tortillas,1,True
+10,PANADERIA,Pan,1,True

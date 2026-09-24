@@ -1,0 +1,14 @@
+grupo_id,familia_id,nombre,es_perecedero
+1,14,CERDO,True
+2,20,CEREALES,False
+3,7,CONGELADOS,True
+4,6,EMBUTIDOS,True
+5,18,ENLATADOS Y PROCESADOS,False
+6,8,FRUTA,True
+7,9,LÁCTEOS,True
+8,2,NUTRICIONAL,False
+9,13,PESCADOS Y MARISCOS,True
+10,22,POLLO,True
+11,14,RES,True
+12,4,SECOS,False
+13,8,VERDURA,True
