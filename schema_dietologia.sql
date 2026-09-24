@@ -245,10 +245,151 @@ CREATE TABLE dietologia.produccion_diaria (
 );
 
 -- =====================================================================
--- 6. ÍNDICES OPERATIVOS RECOMENDADOS
+-- 6. CONSOLIDACIÓN DE PEDIDOS EN ÓRDENES DE COMPRA Y TRAZABILIDAD
+--    ENTRADA -> SALIDA DE ALMACÉN (ver Fase 2.4 del informe)
 -- =====================================================================
 
--- Requerida antes de crear el índice de búsqueda de texto de la sección 6.2
+-- La salida de almacén queda ligada a la solicitud de área/día que
+-- cubre (ej. la entrega de 10 kg a PACIENTES). Se agrega por ALTER
+-- porque programacion_detalle se define en la sección 5, posterior a
+-- movimiento_inventario.
+ALTER TABLE dietologia.movimiento_inventario
+    ADD COLUMN programacion_detalle_id BIGINT
+        REFERENCES dietologia.programacion_detalle(programacion_detalle_id);
+
+-- Vínculo entre la demanda programada por área (programacion_detalle) y
+-- el renglón de Orden de Compra (orden_suministro_detalle) que la
+-- consolida. Varias filas de programacion_detalle (de distintas áreas y
+-- distintos días del periodo) se agregan hacia uno o más renglones de OC
+-- por proveedor+artículo (ej. 10 kg PACIENTES + 10 kg COMEDOR -> 20 kg
+-- en un solo renglón de OC).
+CREATE TABLE dietologia.consolidacion_pedido (
+    consolidacion_id           BIGSERIAL PRIMARY KEY,
+    programacion_detalle_id     BIGINT NOT NULL REFERENCES dietologia.programacion_detalle(programacion_detalle_id) ON DELETE CASCADE,
+    orden_detalle_id             BIGINT NOT NULL REFERENCES dietologia.orden_suministro_detalle(orden_detalle_id) ON DELETE CASCADE,
+    cantidad_consolidada          NUMERIC(12,2) NOT NULL CHECK (cantidad_consolidada > 0),
+    UNIQUE (programacion_detalle_id, orden_detalle_id)
+);
+
+-- Exige que el artículo programado coincida con el artículo de la OC y
+-- que la suma de consolidaciones de un renglón de OC nunca exceda su
+-- cantidad_solicitada (la OC se crea primero con el total ya agregado
+-- por el proceso de compras; ver Fase 5.2 del informe).
+CREATE OR REPLACE FUNCTION dietologia.fn_valida_consolidacion_pedido()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_articulo_programado   VARCHAR(15);
+    v_articulo_ordenado     VARCHAR(15);
+    v_cantidad_solicitada   NUMERIC(12,2);
+    v_suma_consolidada      NUMERIC(12,2);
+BEGIN
+    SELECT codigo_articulo INTO v_articulo_programado
+      FROM dietologia.programacion_detalle
+     WHERE programacion_detalle_id = NEW.programacion_detalle_id;
+
+    SELECT ca.codigo_articulo, osd.cantidad_solicitada
+      INTO v_articulo_ordenado, v_cantidad_solicitada
+      FROM dietologia.orden_suministro_detalle osd
+      JOIN dietologia.contrato_articulo ca ON ca.contrato_articulo_id = osd.contrato_articulo_id
+     WHERE osd.orden_detalle_id = NEW.orden_detalle_id;
+
+    IF v_articulo_programado IS DISTINCT FROM v_articulo_ordenado THEN
+        RAISE EXCEPTION 'consolidacion_pedido: el artículo programado (%) no coincide con el artículo de la OC (%)',
+            v_articulo_programado, v_articulo_ordenado;
+    END IF;
+
+    SELECT COALESCE(SUM(cantidad_consolidada), 0) INTO v_suma_consolidada
+      FROM dietologia.consolidacion_pedido
+     WHERE orden_detalle_id = NEW.orden_detalle_id
+       AND consolidacion_id <> COALESCE(NEW.consolidacion_id, -1);
+
+    IF v_suma_consolidada + NEW.cantidad_consolidada > v_cantidad_solicitada THEN
+        RAISE EXCEPTION 'consolidacion_pedido: la suma consolidada (%) excedería la cantidad_solicitada de la OC (%)',
+            v_suma_consolidada + NEW.cantidad_consolidada, v_cantidad_solicitada;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_valida_consolidacion_pedido
+    BEFORE INSERT OR UPDATE ON dietologia.consolidacion_pedido
+    FOR EACH ROW EXECUTE FUNCTION dietologia.fn_valida_consolidacion_pedido();
+
+-- Trazabilidad de asignación de existencias: qué SALIDA (entrega de
+-- almacén a un área) se surtió con qué ENTRADA (recepción ligada a una
+-- OC). Permite dividir una sola entrada (ej. 20 kg) entre varias salidas
+-- (10 kg a PACIENTES + 10 kg a COMEDOR) y, si un lote se agota, cubrir
+-- una salida con más de una entrada.
+CREATE TABLE dietologia.asignacion_salida_entrada (
+    asignacion_id           BIGSERIAL PRIMARY KEY,
+    movimiento_salida_id      BIGINT NOT NULL REFERENCES dietologia.movimiento_inventario(movimiento_id) ON DELETE CASCADE,
+    movimiento_entrada_id     BIGINT NOT NULL REFERENCES dietologia.movimiento_inventario(movimiento_id) ON DELETE CASCADE,
+    cantidad_asignada          NUMERIC(12,2) NOT NULL CHECK (cantidad_asignada > 0),
+    CHECK (movimiento_salida_id <> movimiento_entrada_id),
+    UNIQUE (movimiento_salida_id, movimiento_entrada_id)
+);
+
+-- Exige que ambos movimientos sean, respectivamente, una salida y una
+-- entrada reales; que compartan artículo/almacén/lote; y que ninguna
+-- suma de asignaciones exceda la cantidad física de la entrada ni de la
+-- salida (impide "repartir" más de lo que realmente entró o salió).
+CREATE OR REPLACE FUNCTION dietologia.fn_valida_asignacion_salida_entrada()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_salida         dietologia.movimiento_inventario%ROWTYPE;
+    v_entrada        dietologia.movimiento_inventario%ROWTYPE;
+    v_suma_entrada   NUMERIC(12,2);
+    v_suma_salida    NUMERIC(12,2);
+BEGIN
+    SELECT * INTO v_salida  FROM dietologia.movimiento_inventario WHERE movimiento_id = NEW.movimiento_salida_id;
+    SELECT * INTO v_entrada FROM dietologia.movimiento_inventario WHERE movimiento_id = NEW.movimiento_entrada_id;
+
+    IF v_salida.tipo_movimiento NOT IN ('SALIDA_CONSUMO','TRANSFERENCIA_SALIDA','MERMA','AJUSTE_NEGATIVO') THEN
+        RAISE EXCEPTION 'asignacion_salida_entrada: el movimiento % no es una salida (tipo=%)',
+            NEW.movimiento_salida_id, v_salida.tipo_movimiento;
+    END IF;
+    IF v_entrada.tipo_movimiento NOT IN ('ENTRADA_COMPRA','TRANSFERENCIA_ENTRADA','AJUSTE_POSITIVO') THEN
+        RAISE EXCEPTION 'asignacion_salida_entrada: el movimiento % no es una entrada (tipo=%)',
+            NEW.movimiento_entrada_id, v_entrada.tipo_movimiento;
+    END IF;
+    IF v_salida.codigo_articulo <> v_entrada.codigo_articulo
+       OR v_salida.almacen_id <> v_entrada.almacen_id
+       OR v_salida.lote_id <> v_entrada.lote_id THEN
+        RAISE EXCEPTION 'asignacion_salida_entrada: la salida % y la entrada % no corresponden al mismo artículo/almacén/lote',
+            NEW.movimiento_salida_id, NEW.movimiento_entrada_id;
+    END IF;
+
+    SELECT COALESCE(SUM(cantidad_asignada), 0) INTO v_suma_entrada
+      FROM dietologia.asignacion_salida_entrada
+     WHERE movimiento_entrada_id = NEW.movimiento_entrada_id
+       AND asignacion_id <> COALESCE(NEW.asignacion_id, -1);
+    IF v_suma_entrada + NEW.cantidad_asignada > v_entrada.cantidad THEN
+        RAISE EXCEPTION 'asignacion_salida_entrada: se asignaría % contra una entrada de sólo % unidades',
+            v_suma_entrada + NEW.cantidad_asignada, v_entrada.cantidad;
+    END IF;
+
+    SELECT COALESCE(SUM(cantidad_asignada), 0) INTO v_suma_salida
+      FROM dietologia.asignacion_salida_entrada
+     WHERE movimiento_salida_id = NEW.movimiento_salida_id
+       AND asignacion_id <> COALESCE(NEW.asignacion_id, -1);
+    IF v_suma_salida + NEW.cantidad_asignada > v_salida.cantidad THEN
+        RAISE EXCEPTION 'asignacion_salida_entrada: se asignaría % contra una salida de sólo % unidades',
+            v_suma_salida + NEW.cantidad_asignada, v_salida.cantidad;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_valida_asignacion_salida_entrada
+    BEFORE INSERT OR UPDATE ON dietologia.asignacion_salida_entrada
+    FOR EACH ROW EXECUTE FUNCTION dietologia.fn_valida_asignacion_salida_entrada();
+
+-- =====================================================================
+-- 7. ÍNDICES OPERATIVOS RECOMENDADOS
+-- =====================================================================
+
+-- Requerida antes de crear el índice de búsqueda de texto más abajo
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- Búsqueda de lotes próximos a caducar (operación diaria crítica de Dietología)
@@ -273,3 +414,16 @@ CREATE INDEX ix_programacion_detalle_articulo ON dietologia.programacion_detalle
 
 -- Trazabilidad de contratos vigentes por artículo
 CREATE INDEX ix_contrato_articulo_codigo ON dietologia.contrato_articulo (codigo_articulo) WHERE activo;
+
+-- Consolidación de pedidos en OC (sección 6): resolver en ambos sentidos
+-- "¿qué áreas están detrás de este renglón de OC?" y "¿en qué OC quedó
+-- consolidada esta solicitud de área?"
+CREATE INDEX ix_consolidacion_pedido_orden ON dietologia.consolidacion_pedido (orden_detalle_id);
+CREATE INDEX ix_consolidacion_pedido_programacion ON dietologia.consolidacion_pedido (programacion_detalle_id);
+
+-- Trazabilidad entrada<->salida (sección 6) y salidas ligadas a una
+-- solicitud de área
+CREATE INDEX ix_asignacion_entrada ON dietologia.asignacion_salida_entrada (movimiento_entrada_id);
+CREATE INDEX ix_asignacion_salida ON dietologia.asignacion_salida_entrada (movimiento_salida_id);
+CREATE INDEX ix_movimiento_programacion_detalle ON dietologia.movimiento_inventario (programacion_detalle_id)
+    WHERE programacion_detalle_id IS NOT NULL;
